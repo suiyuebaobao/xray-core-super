@@ -885,6 +885,19 @@ func TestTrafficSnapshotRepository_FindLatest(t *testing.T) {
 	assert.Equal(t, uint64(500), latest.UplinkTotal)
 }
 
+func TestTrafficSnapshotRepository_FindLatest_TieBreaksByID(t *testing.T) {
+	db := setupFullDB(t)
+	repo := repository.NewTrafficSnapshotRepository(db)
+	capturedAt := time.Now().Truncate(time.Second)
+	db.Create(&model.TrafficSnapshot{NodeID: 1, XrayUserKey: "fl-tie@test.local", UplinkTotal: 100, DownlinkTotal: 200, CapturedAt: capturedAt})
+	db.Create(&model.TrafficSnapshot{NodeID: 1, XrayUserKey: "fl-tie@test.local", UplinkTotal: 500, DownlinkTotal: 600, CapturedAt: capturedAt})
+
+	latest, err := repo.FindLatest(context.Background(), 1, "fl-tie@test.local")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(500), latest.UplinkTotal)
+	assert.Equal(t, uint64(600), latest.DownlinkTotal)
+}
+
 func TestTrafficSnapshotRepository_FindLatest_NotFound(t *testing.T) {
 	db := setupFullDB(t)
 	repo := repository.NewTrafficSnapshotRepository(db)

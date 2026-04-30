@@ -114,13 +114,13 @@ func (h *UsageHandler) writeUsage(c *gin.Context, userID uint64, includeUser boo
 	weekly := buildWeeklyBuckets(ledgers, weeklyStart, weeks)
 	monthly := buildMonthlyBuckets(ledgers, monthlyStart, months)
 
-	nowCopy := now
-	subscriptionTotal, err := h.ledgerRepo.SumByUser(ctx, userID, subID, nil, &nowCopy)
+	summaryEnd := tomorrowStart
+	subscriptionTotal, err := h.ledgerRepo.SumByUser(ctx, userID, subID, nil, &summaryEnd)
 	if err != nil {
 		response.HandleError(c, response.ErrInternalServer)
 		return
 	}
-	allTimeTotal, err := h.ledgerRepo.SumByUser(ctx, userID, nil, nil, &nowCopy)
+	allTimeTotal, err := h.ledgerRepo.SumByUser(ctx, userID, nil, nil, &summaryEnd)
 	if err != nil {
 		response.HandleError(c, response.ErrInternalServer)
 		return

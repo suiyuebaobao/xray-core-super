@@ -1334,7 +1334,8 @@ func TestUsageHandler_AdminUserUsage(t *testing.T) {
 	subID := sub.ID
 	now := time.Now()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	today := todayStart.Add(2 * time.Hour)
+	tomorrowStart := todayStart.AddDate(0, 0, 1)
+	today := now.Add(tomorrowStart.Sub(now) / 2)
 	yesterday := todayStart.AddDate(0, 0, -1).Add(3 * time.Hour)
 	require.NoError(t, db.Create(&model.UsageLedger{UserID: user.ID, SubscriptionID: &subID, NodeID: node.ID, DeltaUpload: 100, DeltaDownload: 200, DeltaTotal: 300, RecordedAt: today}).Error)
 	require.NoError(t, db.Create(&model.UsageLedger{UserID: user.ID, SubscriptionID: &subID, NodeID: node.ID, DeltaUpload: 50, DeltaDownload: 250, DeltaTotal: 300, RecordedAt: yesterday}).Error)
@@ -1361,6 +1362,8 @@ func TestUsageHandler_AdminUserUsage(t *testing.T) {
 	assert.Equal(t, float64(300), todaySummary["total"])
 	toToday := summary["subscription_to_today"].(map[string]interface{})
 	assert.Equal(t, float64(600), toToday["total"])
+	allTimeToToday := summary["all_time_to_today"].(map[string]interface{})
+	assert.Equal(t, float64(600), allTimeToToday["total"])
 	recent := data["recent"].([]interface{})
 	require.NotEmpty(t, recent)
 	assert.Equal(t, "Usage Node", recent[0].(map[string]interface{})["node_name"])

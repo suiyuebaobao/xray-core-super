@@ -1945,7 +1945,7 @@ func (r *TrafficSnapshotRepository) FindLatest(ctx context.Context, nodeID uint6
 	var snapshot model.TrafficSnapshot
 	err := r.db.WithContext(ctx).
 		Where("node_id = ? AND xray_user_key = ?", nodeID, xrayUserKey).
-		Order("captured_at DESC").
+		Order("captured_at DESC, id DESC").
 		First(&snapshot).Error
 	if err != nil {
 		return nil, err

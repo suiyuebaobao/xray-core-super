@@ -86,7 +86,7 @@ func TestCheckAndHandleOverQuota_TrafficExceeded(t *testing.T) {
 
 	sub := &model.UserSubscription{
 		UserID: 1, PlanID: plan.ID, StartDate: time.Now(),
-		ExpireDate: time.Now().AddDate(0, 0, 30),
+		ExpireDate:   time.Now().AddDate(0, 0, 30),
 		TrafficLimit: 1000, UsedTraffic: 2000, Status: "ACTIVE",
 	}
 	db.Create(sub)
@@ -119,7 +119,7 @@ func TestCheckAndHandleOverQuota_NoOverage(t *testing.T) {
 
 	sub := &model.UserSubscription{
 		UserID: 1, PlanID: 1, StartDate: time.Now(),
-		ExpireDate: time.Now().AddDate(0, 0, 30),
+		ExpireDate:   time.Now().AddDate(0, 0, 30),
 		TrafficLimit: 10000, UsedTraffic: 100, Status: "ACTIVE",
 	}
 	db.Create(sub)
@@ -170,7 +170,7 @@ func TestProcessTrafficReport_WithBaseline(t *testing.T) {
 
 	sub := &model.UserSubscription{
 		UserID: user.ID, PlanID: plan.ID, StartDate: time.Now(),
-		ExpireDate: time.Now().AddDate(0, 0, 30),
+		ExpireDate:   time.Now().AddDate(0, 0, 30),
 		TrafficLimit: 100000, UsedTraffic: 0, Status: "ACTIVE",
 	}
 	db.Create(sub)
@@ -262,7 +262,7 @@ func TestCheckAndHandleOverQuota_ExpiredSubscription(t *testing.T) {
 	// 过期但流量未超的订阅
 	sub := &model.UserSubscription{
 		UserID: 1, PlanID: 1, StartDate: time.Now().AddDate(0, 0, -60),
-		ExpireDate: time.Now().AddDate(0, 0, -30), // 已过期
+		ExpireDate:   time.Now().AddDate(0, 0, -30), // 已过期
 		TrafficLimit: 1000, UsedTraffic: 500, Status: "EXPIRED",
 	}
 	db.Create(sub)
@@ -311,7 +311,7 @@ func TestCheckAndHandleOverQuota_ExpiredTriggersDisable(t *testing.T) {
 	// 已过期但流量未超的订阅（ACTIVE 状态，过期时间在过去）
 	sub := &model.UserSubscription{
 		UserID: 1, PlanID: plan.ID, StartDate: time.Now().AddDate(0, 0, -60),
-		ExpireDate: time.Now().AddDate(0, 0, -30), // 已过期
+		ExpireDate:   time.Now().AddDate(0, 0, -30), // 已过期
 		TrafficLimit: 100000, UsedTraffic: 500, Status: "ACTIVE",
 	}
 	db.Create(sub)
@@ -349,7 +349,7 @@ func TestCheckAndHandleOverQuota_WithinLimits(t *testing.T) {
 
 	sub := &model.UserSubscription{
 		UserID: 1, PlanID: 1, StartDate: time.Now(),
-		ExpireDate: time.Now().AddDate(0, 0, 30), // 未过期
+		ExpireDate:   time.Now().AddDate(0, 0, 30), // 未过期
 		TrafficLimit: 10000, UsedTraffic: 100, Status: "ACTIVE",
 	}
 	db.Create(sub)
@@ -450,7 +450,6 @@ func TestProcessTrafficReport_NoActiveSubscription(t *testing.T) {
 	assert.NoError(t, err) // 无活跃订阅应被跳过
 }
 
-
 // TestProcessTrafficReport_ZeroDelta 测试增量为零时不创建账本。
 func TestProcessTrafficReport_ZeroDelta(t *testing.T) {
 	db := setupTrafficOverQuotaDB(t)
@@ -505,4 +504,57 @@ func TestProcessTrafficReport_ZeroDelta(t *testing.T) {
 	var ledgers []model.UsageLedger
 	db.Where("node_id = ?", node.ID).Find(&ledgers)
 	assert.Len(t, ledgers, 0)
+}
+
+// TestProcessTrafficReport_DuplicateSameSecondSnapshotNotDoubleBilled 测试 MySQL 秒级时间精度下重复上报不重复计费。
+func TestProcessTrafficReport_DuplicateSameSecondSnapshotNotDoubleBilled(t *testing.T) {
+	db := setupTrafficOverQuotaDB(t)
+
+	node := &model.Node{
+		Name: "same-second-node", Protocol: "vless", Host: "ssn.test",
+		Port: 443, ServerName: "ssn.test", AgentBaseURL: "http://ssn:8080",
+		AgentTokenHash: "hash", IsEnabled: true,
+	}
+	require.NoError(t, db.Create(node).Error)
+
+	plan := &model.Plan{Name: "same-second-plan", Price: 10, DurationDays: 30, TrafficLimit: 100000, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	sub := &model.UserSubscription{
+		UserID: 1, PlanID: plan.ID, StartDate: time.Now(),
+		ExpireDate:   time.Now().AddDate(0, 0, 30),
+		TrafficLimit: 100000, UsedTraffic: 0, Status: "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+
+	capturedAt := time.Now().Truncate(time.Second)
+	require.NoError(t, db.Create(&model.TrafficSnapshot{
+		NodeID: node.ID, XrayUserKey: "trafficuser@test.local",
+		UplinkTotal: 1000, DownlinkTotal: 2000, CapturedAt: capturedAt,
+	}).Error)
+	require.NoError(t, db.Create(&model.TrafficSnapshot{
+		NodeID: node.ID, XrayUserKey: "trafficuser@test.local",
+		UplinkTotal: 1600, DownlinkTotal: 2600, CapturedAt: capturedAt,
+	}).Error)
+
+	trafficSvc := service.NewTrafficService(db,
+		repository.NewTrafficSnapshotRepository(db),
+		repository.NewUsageLedgerRepository(db),
+		repository.NewSubscriptionRepository(db),
+		repository.NewNodeRepository(db),
+		repository.NewUserRepository(db),
+		nil,
+	)
+
+	err := trafficSvc.ProcessTrafficReport(context.Background(), node.ID, []service.TrafficItem{
+		{XrayUserKey: "trafficuser@test.local", UplinkTotal: 1600, DownlinkTotal: 2600},
+	})
+	require.NoError(t, err)
+
+	var ledgerCount int64
+	require.NoError(t, db.Model(&model.UsageLedger{}).Where("node_id = ?", node.ID).Count(&ledgerCount).Error)
+	assert.Equal(t, int64(0), ledgerCount)
+
+	var snapshotCount int64
+	require.NoError(t, db.Model(&model.TrafficSnapshot{}).Where("node_id = ?", node.ID).Count(&snapshotCount).Error)
+	assert.Equal(t, int64(3), snapshotCount)
 }

@@ -370,6 +370,14 @@ test('admin CRUD APIs and subscription side effects work end to end', async ({ r
 
     const revokedDownload = await request.get(`/sub/${resetTokenData.token}/plain`)
     expect(revokedDownload.ok(), 'revoked token should not download subscription').toBeFalsy()
+
+    await api(request, adminToken, 'delete', `/api/admin/users/${created.userId}`)
+    const usersAfterDelete = await api(request, adminToken, 'get', '/api/admin/users', {
+      params: { keyword: username, page: 1, size: 20 },
+    })
+    expect(usersAfterDelete.users.map((item) => item.username)).not.toContain(username)
+    created.userId = null
+    created.tokenId = null
   } finally {
     if (created.tokenId) {
       await safeApi(request, adminToken, 'post', `/api/admin/subscription-tokens/${created.tokenId}/revoke`, { data: {} })

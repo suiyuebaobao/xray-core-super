@@ -55,11 +55,11 @@ func setupTestDB(t *testing.T) *gorm.DB {
 // newTestConfig 返回测试用配置。
 func newTestConfig() *config.Config {
 	return &config.Config{
-		JWTSecret:             "test-secret-key-for-unit-testing",
-		JWTExpiresIn:          24 * time.Hour,
-		JWTRefreshExpiresIn:   7 * 24 * time.Hour,
-		BCryptRounds:          4, // 测试用低轮数加快速度
-		XrayUserKeyDomain:     "test.local",
+		JWTSecret:           "test-secret-key-for-unit-testing",
+		JWTExpiresIn:        24 * time.Hour,
+		JWTRefreshExpiresIn: 7 * 24 * time.Hour,
+		BCryptRounds:        4, // 测试用低轮数加快速度
+		XrayUserKeyDomain:   "test.local",
 	}
 }
 
@@ -94,6 +94,15 @@ func TestAuthService_Register_Success(t *testing.T) {
 		Where("user_id = ? AND is_revoked = ?", user.ID, false).
 		Count(&tokenCount).Error)
 	assert.Equal(t, int64(1), tokenCount)
+
+	var sub model.UserSubscription
+	require.NoError(t, db.Where("user_id = ? AND status = ?", user.ID, "ACTIVE").First(&sub).Error)
+	assert.Equal(t, uint64(1), sub.PlanID)
+
+	var plan model.Plan
+	require.NoError(t, db.First(&plan, sub.PlanID).Error)
+	assert.True(t, plan.IsDefault)
+	assert.Equal(t, "基础套餐", plan.Name)
 }
 
 // TestAuthService_Register_DuplicateUsername 测试用户名重复场景。
@@ -701,7 +710,7 @@ func TestUserService_GetMeInfo_WithActiveSubscription(t *testing.T) {
 	assert.Equal(t, "ACTIVE", subData["status"])
 }
 
-// TestUserService_GetMeInfo_ExpiredSubscription 测试过期订阅不返回订阅信息。
+// TestUserService_GetMeInfo_ExpiredSubscription 测试过期订阅不覆盖注册时创建的基础套餐。
 func TestUserService_GetMeInfo_ExpiredSubscription(t *testing.T) {
 	db := setupTestDB(t)
 	cfg := newTestConfig()
@@ -733,7 +742,10 @@ func TestUserService_GetMeInfo_ExpiredSubscription(t *testing.T) {
 
 	data, err := userSvc.GetMeInfo(ctx, pub.ID)
 	assert.NoError(t, err)
-	assert.Nil(t, data["subscription"]) // 过期订阅不应返回
+	assert.NotNil(t, data["subscription"])
+	subData := data["subscription"].(map[string]interface{})
+	assert.Equal(t, "ACTIVE", subData["status"])
+	assert.Equal(t, uint64(1), subData["plan_id"])
 }
 
 // TestAuthService_Login_WithEmail 测试带邮箱用户登录。

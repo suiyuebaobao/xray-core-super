@@ -7,7 +7,24 @@
         <el-button type="primary" @click="showCreateDialog">新增用户</el-button>
       </div>
     </div>
-    <el-table :data="users" border style="width: 100%" v-loading="loading">
+
+    <div v-if="selectedUsers.length" class="batch-toolbar">
+      <span>已选择 {{ selectedUsers.length }} 个用户</span>
+      <div>
+        <el-button size="small" @click="clearUserSelection">取消选择</el-button>
+        <el-button size="small" type="danger" :loading="batchDeleting" @click="handleBatchDelete">批量删除</el-button>
+      </div>
+    </div>
+
+    <el-table
+      ref="usersTableRef"
+      :data="users"
+      border
+      style="width: 100%"
+      v-loading="loading"
+      @selection-change="handleUserSelectionChange"
+    >
+      <el-table-column type="selection" width="48" :selectable="canSelectUser" />
       <el-table-column prop="id" label="ID" width="60" />
       <el-table-column prop="username" label="用户名" min-width="120" />
       <el-table-column prop="email" label="邮箱" min-width="180" />
@@ -46,7 +63,7 @@
       <el-table-column prop="last_login_at" label="最后登录" width="180">
         <template #default="{ row }">{{ row.last_login_at ? formatDate(row.last_login_at) : '-' }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="340">
+      <el-table-column label="操作" width="400">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="handleSubscription(row)">订阅</el-button>
           <el-button size="small" type="info" @click="handleUsage(row)">用量</el-button>
@@ -54,6 +71,7 @@
             {{ row.status === 'active' ? '禁用' : '启用' }}
           </el-button>
           <el-button size="small" type="warning" @click="handleResetPassword(row)">重置密码</el-button>
+          <el-button size="small" type="danger" :disabled="isCurrentUser(row)" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -258,8 +276,10 @@
 // 管理后台 - 用户管理页。
 import { ref, reactive, computed, onMounted } from 'vue'
 import { adminApi } from '@/api'
+import { useUserStore } from '@/stores/user'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+const userStore = useUserStore()
 const users = ref([])
 const loading = ref(false)
 const page = ref(1)
@@ -267,6 +287,9 @@ const size = ref(20)
 const total = ref(0)
 const searchText = ref('')
 const plans = ref([])
+const usersTableRef = ref(null)
+const selectedUsers = ref([])
+const batchDeleting = ref(false)
 const createDialogVisible = ref(false)
 const creatingUser = ref(false)
 const createFormRef = ref(null)
@@ -474,6 +497,100 @@ async function handleResetPassword(row) {
   }
 }
 
+function isCurrentUser(row) {
+  return String(row.id) === String(userStore.user?.id)
+}
+
+function canSelectUser(row) {
+  return !isCurrentUser(row)
+}
+
+function handleUserSelectionChange(selection) {
+  selectedUsers.value = selection
+}
+
+function clearUserSelection() {
+  usersTableRef.value?.clearSelection()
+}
+
+async function handleDelete(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除用户"${row.username}"吗？该操作会删除用户账号、订阅、订阅 Token、订单、支付记录和用量记录。`,
+      '确认删除',
+      { type: 'warning' },
+    )
+    await adminApi.users.delete(row.id)
+    removeUsersFromList([row.id])
+    ElMessage.success('删除成功')
+    fetchUsers().catch(() => {
+      ElMessage.warning('删除已生效，刷新列表失败')
+    })
+  } catch (err) {
+    if (err !== 'cancel') {
+      ElMessage.error(err.message || '删除失败')
+    }
+  }
+}
+
+async function handleBatchDelete() {
+  const rows = [...selectedUsers.value]
+  if (!rows.length) {
+    ElMessage.warning('请选择要删除的用户')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定批量删除选中的 ${rows.length} 个用户吗？该操作会删除对应账号、订阅、订阅 Token、订单、支付记录和用量记录。`,
+      '批量删除',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+
+  batchDeleting.value = true
+  const deletedIds = []
+  const failed = []
+  try {
+    for (const row of rows) {
+      try {
+        await adminApi.users.delete(row.id)
+        deletedIds.push(row.id)
+      } catch (err) {
+        failed.push(`${row.username || row.id}：${err.message || '删除失败'}`)
+      }
+    }
+
+    if (deletedIds.length) {
+      removeUsersFromList(deletedIds)
+    }
+    if (failed.length) {
+      ElMessage.warning(`成功删除 ${deletedIds.length} 个，失败 ${failed.length} 个：${failed.join('；')}`)
+    } else {
+      ElMessage.success('批量删除成功')
+    }
+    fetchUsers().catch(() => {
+      ElMessage.warning('删除已生效，刷新列表失败')
+    })
+  } finally {
+    batchDeleting.value = false
+  }
+}
+
+function removeUsersFromList(ids) {
+  const idSet = new Set(ids.map((id) => String(id)))
+  const beforeCount = users.value.length
+  users.value = users.value.filter((user) => !idSet.has(String(user.id)))
+  selectedUsers.value = selectedUsers.value.filter((user) => !idSet.has(String(user.id)))
+  const removedCount = beforeCount - users.value.length
+  total.value = Math.max(0, total.value - removedCount)
+  if (users.value.length === 0 && page.value > 1 && total.value > 0) {
+    page.value -= 1
+  }
+}
+
 async function handleSubscription(row) {
   currentUser.value = row
   currentSubscription.value = null
@@ -627,6 +744,19 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+.batch-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #f5f7fa;
+  color: #606266;
+  font-size: 14px;
 }
 .user-plan-cell {
   display: flex;

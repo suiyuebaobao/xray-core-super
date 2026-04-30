@@ -144,6 +144,8 @@ type Plan struct {
 	DurationDays uint32    `gorm:"column:duration_days" json:"duration_days"`
 	SortWeight   int       `gorm:"column:sort_weight;default:0" json:"sort_weight"`
 	IsActive     bool      `gorm:"column:is_active;default:true;index" json:"is_active"`
+	IsDefault    bool      `gorm:"column:is_default;default:false;index" json:"is_default"`
+	IsDeleted    bool      `gorm:"column:is_deleted;default:false;index" json:"is_deleted"`
 	CreatedAt    time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 	UpdatedAt    time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
 }

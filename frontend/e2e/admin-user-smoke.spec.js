@@ -92,6 +92,8 @@ test('admin and user pages render against live API', async ({ page }) => {
   await page.goto('/admin/users')
   await page.waitForLoadState('networkidle')
   await expect(page.getByText('剩余流量').first()).toBeVisible()
+  await expect(page.locator('.admin-users .el-table-column--selection .el-checkbox__inner').first()).toBeVisible()
+  await expect(page.getByRole('button', { name: '删除' }).first()).toBeVisible()
   await expect(page.getByRole('button', { name: '用量' }).first()).toBeVisible()
   await page.getByRole('button', { name: '用量' }).first().click()
   await expect(page.getByText('用量记录 -').first()).toBeVisible()

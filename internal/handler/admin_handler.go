@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"time"
 
+	"suiyue/internal/middleware"
 	"suiyue/internal/model"
 	"suiyue/internal/platform/response"
 	"suiyue/internal/platform/secure"
@@ -34,6 +35,7 @@ import (
 type AdminPlanHandler struct {
 	planRepo      *repository.PlanRepository
 	nodeGroupRepo *repository.NodeGroupRepository
+	nodeAccessSvc nodeAccessSubscriptionSyncer
 }
 
 // AdminDashboardHandler 管理后台仪表盘处理器。
@@ -93,6 +95,13 @@ func NewAdminPlanHandler(planRepo *repository.PlanRepository, nodeGroupRepo ...*
 	if len(nodeGroupRepo) > 0 {
 		h.nodeGroupRepo = nodeGroupRepo[0]
 	}
+	return h
+}
+
+// NewAdminPlanHandlerWithSync 创建带订阅同步能力的套餐处理器。
+func NewAdminPlanHandlerWithSync(planRepo *repository.PlanRepository, nodeGroupRepo *repository.NodeGroupRepository, nodeAccessSvc nodeAccessSubscriptionSyncer) *AdminPlanHandler {
+	h := NewAdminPlanHandler(planRepo, nodeGroupRepo)
+	h.nodeAccessSvc = nodeAccessSvc
 	return h
 }
 
@@ -156,6 +165,9 @@ func (h *AdminPlanHandler) Update(c *gin.Context) {
 	plan.DurationDays = req.DurationDays
 	plan.SortWeight = req.SortWeight
 	plan.IsActive = req.IsActive
+	if plan.IsDefault {
+		plan.IsActive = true
+	}
 
 	if err := h.planRepo.Update(c.Request.Context(), plan); err != nil {
 		response.HandleError(c, response.ErrInternalServer)
@@ -173,12 +185,44 @@ func (h *AdminPlanHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	if err := h.planRepo.Delete(c.Request.Context(), id); err != nil {
+	result, err := h.planRepo.DeleteWithDefaultFallback(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, repository.ErrDefaultPlanCannotDelete) {
+			response.HandleError(c, &response.AppError{
+				Code:     40010,
+				HTTPCode: http.StatusBadRequest,
+				Message:  repository.ErrDefaultPlanCannotDelete.Error(),
+			})
+			return
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.HandleError(c, response.ErrNotFound)
+			return
+		}
 		response.HandleError(c, response.ErrInternalServer)
 		return
 	}
 
-	response.Success(c, nil)
+	h.syncPlanDeleteFallback(c.Request.Context(), result)
+
+	response.Success(c, gin.H{
+		"default_plan_id":          result.DefaultPlanID,
+		"moved_subscription_count": len(result.MovedSubscriptions),
+	})
+}
+
+func (h *AdminPlanHandler) syncPlanDeleteFallback(ctx context.Context, result *repository.PlanDeleteResult) {
+	if h.nodeAccessSvc == nil || result == nil {
+		return
+	}
+	for _, moved := range result.MovedSubscriptions {
+		if err := h.nodeAccessSvc.TriggerOnExpire(ctx, moved.UserID, moved.SubscriptionID, moved.OldPlanID); err != nil {
+			log.Printf("[admin] delete plan fallback expire sync failed: user=%d sub=%d old_plan=%d err=%v", moved.UserID, moved.SubscriptionID, moved.OldPlanID, err)
+		}
+		if err := h.nodeAccessSvc.TriggerOnRenew(ctx, moved.UserID, moved.SubscriptionID, moved.NewPlanID); err != nil {
+			log.Printf("[admin] delete plan fallback renew sync failed: user=%d sub=%d new_plan=%d err=%v", moved.UserID, moved.SubscriptionID, moved.NewPlanID, err)
+		}
+	}
 }
 
 // List 处理 GET /api/admin/plans — 套餐列表（含已下架）。
@@ -873,6 +917,58 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 	}
 
 	response.Success(c, user.ToPublic())
+}
+
+// Delete 处理 DELETE /api/admin/users/:id — 删除用户。
+func (h *AdminUserHandler) Delete(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.HandleError(c, response.ErrBadRequest)
+		return
+	}
+
+	if currentUserID, ok := middleware.GetUserID(c); ok && currentUserID == id {
+		response.ErrorWithDetail(c, http.StatusBadRequest, 40005, "不能删除当前登录管理员", "")
+		return
+	}
+
+	ctx := c.Request.Context()
+	if _, err := h.userRepo.FindByID(ctx, id); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.HandleError(c, response.ErrNotFound)
+			return
+		}
+		response.HandleError(c, response.ErrInternalServer)
+		return
+	}
+
+	var activeSub *model.UserSubscription
+	if h.subRepo != nil {
+		sub, err := h.subRepo.FindActiveByUserID(ctx, id)
+		if err == nil {
+			activeSub = sub
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			response.HandleError(c, response.ErrInternalServer)
+			return
+		}
+	}
+
+	if activeSub != nil && h.nodeAccessSvc != nil {
+		if err := h.nodeAccessSvc.TriggerOnExpire(ctx, id, activeSub.ID, activeSub.PlanID); err != nil {
+			log.Printf("[admin] delete user node sync failed: user=%d sub=%d plan=%d err=%v", id, activeSub.ID, activeSub.PlanID, err)
+		}
+	}
+
+	if err := h.userRepo.Delete(ctx, id); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.HandleError(c, response.ErrNotFound)
+			return
+		}
+		response.HandleError(c, response.ErrInternalServer)
+		return
+	}
+
+	response.Success(c, nil)
 }
 
 // ToggleStatus 处理 PUT /api/admin/users/:id/status — 启用/禁用用户。

@@ -368,9 +368,61 @@ func TestPlanRepository_Delete(t *testing.T) {
 	created, _ := repo.Create(context.Background(), plan)
 	err := repo.Delete(context.Background(), created.ID)
 	assert.NoError(t, err)
-	var count int64
-	db.Model(&model.Plan{}).Where("id = ?", created.ID).Count(&count)
-	assert.Equal(t, int64(0), count)
+	var deleted model.Plan
+	require.NoError(t, db.First(&deleted, created.ID).Error)
+	assert.True(t, deleted.IsDeleted)
+	assert.False(t, deleted.IsActive)
+
+	plans, err := repo.ListAll(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, plans, 1)
+	assert.True(t, plans[0].IsDefault)
+}
+
+func TestPlanRepository_Delete_DefaultPlanBlocked(t *testing.T) {
+	_, repo := setupPlanTestDB(t)
+	base, err := repo.Create(context.Background(), &model.Plan{Name: "Base", Price: 0, DurationDays: 3650, IsActive: true, IsDefault: true})
+	require.NoError(t, err)
+
+	err = repo.Delete(context.Background(), base.ID)
+	assert.ErrorIs(t, err, repository.ErrDefaultPlanCannotDelete)
+}
+
+func TestPlanRepository_Delete_MovesActiveSubscriptionsToDefault(t *testing.T) {
+	db := setupFullDB(t)
+	repo := repository.NewPlanRepository(db)
+	base, err := repo.Create(context.Background(), &model.Plan{Name: "Base", Price: 0, TrafficLimit: 100, DurationDays: 3650, IsActive: true, IsDefault: true})
+	require.NoError(t, err)
+	paid, err := repo.Create(context.Background(), &model.Plan{Name: "Paid", Price: 10, TrafficLimit: 1000, DurationDays: 30, IsActive: true})
+	require.NoError(t, err)
+	user := &model.User{UUID: "move-user", Username: "move-user", PasswordHash: "hash", XrayUserKey: "move@test.local", Status: "active"}
+	require.NoError(t, db.Create(user).Error)
+	activeUserID := user.ID
+	sub := &model.UserSubscription{
+		UserID:       user.ID,
+		PlanID:       paid.ID,
+		StartDate:    time.Now(),
+		ExpireDate:   time.Now().AddDate(0, 0, 30),
+		TrafficLimit: paid.TrafficLimit,
+		UsedTraffic:  500,
+		Status:       "ACTIVE",
+		ActiveUserID: &activeUserID,
+	}
+	require.NoError(t, db.Create(sub).Error)
+
+	result, err := repo.DeleteWithDefaultFallback(context.Background(), paid.ID)
+	require.NoError(t, err)
+	require.Len(t, result.MovedSubscriptions, 1)
+	assert.Equal(t, base.ID, result.DefaultPlanID)
+
+	var updated model.UserSubscription
+	require.NoError(t, db.First(&updated, sub.ID).Error)
+	assert.Equal(t, base.ID, updated.PlanID)
+	assert.Equal(t, base.TrafficLimit, updated.TrafficLimit)
+	assert.Equal(t, uint64(0), updated.UsedTraffic)
+	assert.Equal(t, "ACTIVE", updated.Status)
+	assert.NotNil(t, updated.ActiveUserID)
+	assert.Equal(t, user.ID, *updated.ActiveUserID)
 }
 
 func TestPlanRepository_ListAll(t *testing.T) {

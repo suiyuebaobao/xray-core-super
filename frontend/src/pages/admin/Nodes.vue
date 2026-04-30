@@ -8,7 +8,23 @@
       </div>
     </div>
 
-    <el-table :data="nodes" border style="width: 100%" v-loading="loading">
+    <div v-if="selectedNodes.length" class="batch-toolbar">
+      <span>已选择 {{ selectedNodes.length }} 个出口节点</span>
+      <div>
+        <el-button size="small" @click="clearNodeSelection">取消选择</el-button>
+        <el-button size="small" type="danger" :loading="batchDeleting" @click="handleBatchDelete">批量删除</el-button>
+      </div>
+    </div>
+
+    <el-table
+      ref="nodesTableRef"
+      :data="nodes"
+      border
+      style="width: 100%"
+      v-loading="loading"
+      @selection-change="handleNodeSelectionChange"
+    >
+      <el-table-column type="selection" width="48" />
       <el-table-column prop="id" label="ID" width="60" />
       <el-table-column prop="name" label="节点名称" />
       <el-table-column prop="host" label="地址" />
@@ -138,6 +154,9 @@ const isEdit = ref(false)
 const editingId = ref(null)
 const saving = ref(false)
 const formRef = ref(null)
+const nodesTableRef = ref(null)
+const selectedNodes = ref([])
+const batchDeleting = ref(false)
 
 const form = reactive({
   name: '',
@@ -328,13 +347,72 @@ async function handleDelete(row) {
   try {
     await ElMessageBox.confirm(`确定删除节点"${row.name}"吗？`, '确认删除', { type: 'warning' })
     await adminApi.nodes.delete(row.id)
+    removeNodesFromList([row.id])
     ElMessage.success('删除成功')
-    await fetchNodes()
+    fetchNodes().catch(() => {
+      ElMessage.warning('删除已生效，刷新列表失败')
+    })
   } catch (err) {
     if (err !== 'cancel') {
       ElMessage.error(err.message || '删除失败')
     }
   }
+}
+
+function handleNodeSelectionChange(selection) {
+  selectedNodes.value = selection
+}
+
+function clearNodeSelection() {
+  nodesTableRef.value?.clearSelection()
+}
+
+async function handleBatchDelete() {
+  const rows = [...selectedNodes.value]
+  if (!rows.length) {
+    ElMessage.warning('请选择要删除的出口节点')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(`确定批量删除选中的 ${rows.length} 个出口节点吗？`, '批量删除', { type: 'warning' })
+  } catch {
+    return
+  }
+
+  batchDeleting.value = true
+  const deletedIds = []
+  const failed = []
+  try {
+    for (const row of rows) {
+      try {
+        await adminApi.nodes.delete(row.id)
+        deletedIds.push(row.id)
+      } catch (err) {
+        failed.push(`${row.name || row.id}：${err.message || '删除失败'}`)
+      }
+    }
+
+    if (deletedIds.length) {
+      removeNodesFromList(deletedIds)
+    }
+    if (failed.length) {
+      ElMessage.warning(`成功删除 ${deletedIds.length} 个，失败 ${failed.length} 个：${failed.join('；')}`)
+    } else {
+      ElMessage.success('批量删除成功')
+    }
+    fetchNodes().catch(() => {
+      ElMessage.warning('删除已生效，刷新列表失败')
+    })
+  } finally {
+    batchDeleting.value = false
+  }
+}
+
+function removeNodesFromList(ids) {
+  const idSet = new Set(ids.map((id) => String(id)))
+  nodes.value = nodes.value.filter((node) => !idSet.has(String(node.id)))
+  selectedNodes.value = selectedNodes.value.filter((node) => !idSet.has(String(node.id)))
 }
 
 async function fetchNodes() {
@@ -367,6 +445,19 @@ onMounted(() => {
 .header > div {
   display: flex;
   gap: 8px;
+}
+.batch-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #f5f7fa;
+  color: #606266;
+  font-size: 14px;
 }
 .deploy-steps {
   margin-top: 16px;

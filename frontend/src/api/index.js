@@ -4,6 +4,7 @@ const compact = (params) => Object.fromEntries(
   Object.entries(params).filter(([, value]) => value !== undefined && value !== '')
 )
 const pageParams = ({ page = 1, size = 20, ...rest } = {}) => compact({ page, size, ...rest })
+const freshParams = (params = {}) => compact({ ...params, _t: Date.now() })
 
 export const authApi = {
   register: (payload) => httpPost('/api/auth/register', payload),
@@ -40,7 +41,7 @@ export const adminApi = {
     }
   },
   plans: {
-    list: () => httpGet('/api/admin/plans'),
+    list: () => httpGet('/api/admin/plans', freshParams()),
     create: (payload) => httpPost('/api/admin/plans', payload),
     update: (id, payload) => httpPut(`/api/admin/plans/${id}`, payload),
     delete: (id) => httpDelete(`/api/admin/plans/${id}`),
@@ -48,7 +49,7 @@ export const adminApi = {
     nodeGroups: (id) => httpGet(`/api/admin/plans/${id}/node-groups`),
   },
   nodeGroups: {
-    list: () => httpGet('/api/admin/node-groups'),
+    list: () => httpGet('/api/admin/node-groups', freshParams()),
     create: (payload) => httpPost('/api/admin/node-groups', payload),
     update: (id, payload) => httpPut(`/api/admin/node-groups/${id}`, payload),
     delete: (id) => httpDelete(`/api/admin/node-groups/${id}`),
@@ -56,14 +57,14 @@ export const adminApi = {
     bindNodes: (id, nodeIds) => httpPut(`/api/admin/node-groups/${id}/nodes`, { node_ids: nodeIds }),
   },
   nodes: {
-    list: () => httpGet('/api/admin/nodes'),
+    list: () => httpGet('/api/admin/nodes', freshParams()),
     create: (payload) => httpPost('/api/admin/nodes', payload),
     update: (id, payload) => httpPut(`/api/admin/nodes/${id}`, payload),
     delete: (id) => httpDelete(`/api/admin/nodes/${id}`),
     deploy: (payload) => httpPost('/api/admin/nodes/deploy', payload),
   },
   relays: {
-    list: () => httpGet('/api/admin/relays'),
+    list: () => httpGet('/api/admin/relays', freshParams()),
     create: (payload) => httpPost('/api/admin/relays', payload),
     update: (id, payload) => httpPut(`/api/admin/relays/${id}`, payload),
     delete: (id) => httpDelete(`/api/admin/relays/${id}`),
@@ -72,8 +73,9 @@ export const adminApi = {
     bindBackends: (id, backends) => httpPut(`/api/admin/relays/${id}/backends`, { backends }),
   },
   users: {
-    list: ({ keyword = '', ...params } = {}) => httpGet('/api/admin/users', pageParams({ ...params, keyword: keyword || undefined })),
+    list: ({ keyword = '', ...params } = {}) => httpGet('/api/admin/users', freshParams(pageParams({ ...params, keyword: keyword || undefined }))),
     create: (payload) => httpPost('/api/admin/users', payload),
+    delete: (id) => httpDelete(`/api/admin/users/${id}`),
     updateStatus: (id, status) => httpPut(`/api/admin/users/${id}/status`, { status }),
     resetPassword: (id, newPassword) => httpPut(`/api/admin/users/${id}/password`, { new_password: newPassword }),
     subscription: (id) => httpGet(`/api/admin/users/${id}/subscription`),

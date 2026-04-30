@@ -8,7 +8,23 @@
       </div>
     </div>
 
-    <el-table :data="relays" border style="width: 100%" v-loading="loading">
+    <div v-if="selectedRelays.length" class="batch-toolbar">
+      <span>已选择 {{ selectedRelays.length }} 个中转节点</span>
+      <div>
+        <el-button size="small" @click="clearRelaySelection">取消选择</el-button>
+        <el-button size="small" type="danger" :loading="batchDeleting" @click="handleBatchDelete">批量删除</el-button>
+      </div>
+    </div>
+
+    <el-table
+      ref="relaysTableRef"
+      :data="relays"
+      border
+      style="width: 100%"
+      v-loading="loading"
+      @selection-change="handleRelaySelectionChange"
+    >
+      <el-table-column type="selection" width="48" />
       <el-table-column prop="id" label="ID" width="60" />
       <el-table-column prop="name" label="中转名称" min-width="140" />
       <el-table-column prop="host" label="入口地址" min-width="170" />
@@ -196,6 +212,9 @@ import { CircleCheck, CircleClose, Loading } from '@element-plus/icons-vue'
 const relays = ref([])
 const allNodes = ref([])
 const loading = ref(false)
+const relaysTableRef = ref(null)
+const selectedRelays = ref([])
+const batchDeleting = ref(false)
 const dialogVisible = ref(false)
 const isEdit = ref(false)
 const editingId = ref(null)
@@ -352,13 +371,72 @@ async function handleDelete(row) {
   try {
     await ElMessageBox.confirm(`确定删除中转节点"${row.name}"吗？启用中的后端绑定需要先删除或禁用。`, '确认删除', { type: 'warning' })
     await adminApi.relays.delete(row.id)
+    removeRelaysFromList([row.id])
     ElMessage.success('删除成功')
-    await fetchRelays()
+    fetchRelays().catch(() => {
+      ElMessage.warning('删除已生效，刷新列表失败')
+    })
   } catch (err) {
     if (err !== 'cancel') {
       ElMessage.error(err.message || '删除失败')
     }
   }
+}
+
+function handleRelaySelectionChange(selection) {
+  selectedRelays.value = selection
+}
+
+function clearRelaySelection() {
+  relaysTableRef.value?.clearSelection()
+}
+
+async function handleBatchDelete() {
+  const rows = [...selectedRelays.value]
+  if (!rows.length) {
+    ElMessage.warning('请选择要删除的中转节点')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(`确定批量删除选中的 ${rows.length} 个中转节点吗？启用中的后端绑定需要先删除或禁用。`, '批量删除', { type: 'warning' })
+  } catch {
+    return
+  }
+
+  batchDeleting.value = true
+  const deletedIds = []
+  const failed = []
+  try {
+    for (const row of rows) {
+      try {
+        await adminApi.relays.delete(row.id)
+        deletedIds.push(row.id)
+      } catch (err) {
+        failed.push(`${row.name || row.id}：${err.message || '删除失败'}`)
+      }
+    }
+
+    if (deletedIds.length) {
+      removeRelaysFromList(deletedIds)
+    }
+    if (failed.length) {
+      ElMessage.warning(`成功删除 ${deletedIds.length} 个，失败 ${failed.length} 个：${failed.join('；')}`)
+    } else {
+      ElMessage.success('批量删除成功')
+    }
+    fetchRelays().catch(() => {
+      ElMessage.warning('删除已生效，刷新列表失败')
+    })
+  } finally {
+    batchDeleting.value = false
+  }
+}
+
+function removeRelaysFromList(ids) {
+  const idSet = new Set(ids.map((id) => String(id)))
+  relays.value = relays.value.filter((relay) => !idSet.has(String(relay.id)))
+  selectedRelays.value = selectedRelays.value.filter((relay) => !idSet.has(String(relay.id)))
 }
 
 async function showBackendsDialog(row) {
@@ -538,6 +616,19 @@ onMounted(() => {
 .header > div {
   display: flex;
   gap: 8px;
+}
+.batch-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #f5f7fa;
+  color: #606266;
+  font-size: 14px;
 }
 .relation-cell {
   display: flex;

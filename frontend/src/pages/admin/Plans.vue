@@ -5,9 +5,32 @@
       <el-button type="primary" @click="showAddDialog">新增套餐</el-button>
     </div>
 
-    <el-table :data="plans" border style="width: 100%" v-loading="loading">
+    <div v-if="selectedPlans.length" class="batch-toolbar">
+      <span>已选择 {{ selectedPlans.length }} 个套餐</span>
+      <div>
+        <el-button size="small" @click="clearPlanSelection">取消选择</el-button>
+        <el-button size="small" type="danger" :loading="batchDeleting" @click="handleBatchDelete">批量删除</el-button>
+      </div>
+    </div>
+
+    <el-table
+      ref="plansTableRef"
+      :data="plans"
+      border
+      style="width: 100%"
+      v-loading="loading"
+      @selection-change="handlePlanSelectionChange"
+    >
+      <el-table-column type="selection" width="48" :selectable="canSelectPlan" />
       <el-table-column prop="id" label="ID" width="60" />
-      <el-table-column prop="name" label="套餐名称" min-width="150" />
+      <el-table-column prop="name" label="套餐名称" min-width="170">
+        <template #default="{ row }">
+          <div class="plan-name-cell">
+            <span>{{ row.name }}</span>
+            <el-tag v-if="row.is_default" size="small" type="warning" effect="plain">基础套餐</el-tag>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column prop="price" label="价格" width="100">
         <template #default="{ row }">{{ row.price }} {{ row.currency }}</template>
       </el-table-column>
@@ -41,7 +64,7 @@
       <el-table-column label="操作" width="180">
         <template #default="{ row }">
           <el-button size="small" @click="showEditDialog(row)">编辑</el-button>
-          <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <el-button size="small" type="danger" :disabled="row.is_default" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -62,6 +85,9 @@
         <el-form-item label="套餐名称" prop="name">
           <el-input v-model="form.name" />
         </el-form-item>
+        <el-form-item v-if="form.isDefault" label="套餐类型">
+          <el-tag type="warning" effect="plain">基础套餐，不能删除，始终启用</el-tag>
+        </el-form-item>
         <el-form-item label="价格" prop="price">
           <el-input-number v-model="form.price" :min="0" :precision="2" />
         </el-form-item>
@@ -77,7 +103,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="状态">
-          <el-switch v-model="form.is_active" active-text="上架" inactive-text="下架" />
+          <el-switch v-model="form.is_active" active-text="上架" inactive-text="下架" :disabled="form.isDefault" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -116,6 +142,9 @@ const isEdit = ref(false)
 const editingId = ref(null)
 const saving = ref(false)
 const formRef = ref(null)
+const plansTableRef = ref(null)
+const selectedPlans = ref([])
+const batchDeleting = ref(false)
 
 // 节点分组相关
 const nodeGroups = ref([])
@@ -138,6 +167,7 @@ const form = reactive({
   duration_days: 30,
   nodeGroupIds: [],
   is_active: true,
+  isDefault: false,
 })
 
 const rules = {
@@ -176,6 +206,7 @@ function resetForm() {
   form.duration_days = 30
   form.nodeGroupIds = []
   form.is_active = true
+  form.isDefault = false
 }
 
 function showAddDialog() {
@@ -193,7 +224,8 @@ function showEditDialog(row) {
   form.trafficLimitGB = Math.round(row.traffic_limit / 1024 / 1024 / 1024)
   form.duration_days = row.duration_days
   form.nodeGroupIds = row.node_group_ids || []
-  form.is_active = row.is_active
+  form.isDefault = !!row.is_default
+  form.is_active = row.is_default ? true : row.is_active
   dialogVisible.value = true
 }
 
@@ -237,16 +269,87 @@ async function handleSave() {
 }
 
 async function handleDelete(row) {
+  if (row.is_default) {
+    ElMessage.warning('基础套餐不能删除，只能修改')
+    return
+  }
   try {
-    await ElMessageBox.confirm(`确定删除套餐"${row.name}"吗？`, '确认删除', { type: 'warning' })
-    await adminApi.plans.delete(row.id)
-    ElMessage.success('删除成功')
-    await fetchPlans()
+    await ElMessageBox.confirm(`确定删除套餐"${row.name}"吗？使用该套餐的用户会自动转入基础套餐，历史订单和兑换码记录会保留。`, '确认删除', { type: 'warning' })
+    const res = await adminApi.plans.delete(row.id)
+    removePlansFromList([row.id])
+    const moved = res.data?.moved_subscription_count || 0
+    ElMessage.success(moved > 0 ? `删除成功，${moved} 个用户已转入基础套餐` : '删除成功')
+    fetchPlans().catch(() => {
+      ElMessage.warning('删除已生效，刷新列表失败')
+    })
   } catch (err) {
     if (err !== 'cancel') {
       ElMessage.error(err.message || '删除失败')
     }
   }
+}
+
+function canSelectPlan(row) {
+  return !row.is_default
+}
+
+function handlePlanSelectionChange(selection) {
+  selectedPlans.value = selection
+}
+
+function clearPlanSelection() {
+  plansTableRef.value?.clearSelection()
+}
+
+async function handleBatchDelete() {
+  const rows = selectedPlans.value.filter(canSelectPlan)
+  if (!rows.length) {
+    ElMessage.warning('没有可删除的套餐')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(`确定批量删除选中的 ${rows.length} 个套餐吗？使用这些套餐的用户会自动转入基础套餐。`, '批量删除', { type: 'warning' })
+  } catch {
+    return
+  }
+
+  batchDeleting.value = true
+  const deletedIds = []
+  const failed = []
+  let movedCount = 0
+  try {
+    for (const row of rows) {
+      try {
+        const res = await adminApi.plans.delete(row.id)
+        deletedIds.push(row.id)
+        movedCount += res.data?.moved_subscription_count || 0
+      } catch (err) {
+        failed.push(`${row.name || row.id}：${err.message || '删除失败'}`)
+      }
+    }
+
+    if (deletedIds.length) {
+      removePlansFromList(deletedIds)
+    }
+    if (failed.length) {
+      ElMessage.warning(`成功删除 ${deletedIds.length} 个，失败 ${failed.length} 个：${failed.join('；')}`)
+    } else {
+      ElMessage.success(movedCount > 0 ? `批量删除成功，${movedCount} 个用户已转入基础套餐` : '批量删除成功')
+    }
+    fetchPlans().catch(() => {
+      ElMessage.warning('删除已生效，刷新列表失败')
+    })
+  } finally {
+    batchDeleting.value = false
+  }
+}
+
+function removePlansFromList(ids) {
+  const idSet = new Set(ids.map((id) => String(id)))
+  plans.value = plans.value.filter((plan) => !idSet.has(String(plan.id)))
+  selectedPlans.value = selectedPlans.value.filter((plan) => !idSet.has(String(plan.id)))
+  total.value = plans.value.length
 }
 
 async function fetchPlans() {
@@ -313,6 +416,24 @@ onMounted(async () => {
   align-items: center;
   gap: 6px;
   min-height: 28px;
+}
+.batch-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #f5f7fa;
+  color: #606266;
+  font-size: 14px;
+}
+.plan-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .empty-text {
   color: #909399;

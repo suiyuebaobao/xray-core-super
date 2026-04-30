@@ -22,12 +22,33 @@ import (
 var ErrNodeGroupInUse = errors.New("该分组下存在节点，无法删除")
 var ErrInvalidNodeID = errors.New("节点 ID 无效")
 var ErrRelayHasEnabledBackends = errors.New("中转节点存在启用的后端绑定，无法删除")
+var ErrDefaultPlanCannotDelete = errors.New("基础套餐不能删除，只能修改")
+
+const (
+	defaultPlanName         = "基础套餐"
+	defaultPlanDurationDays = 3650
+)
 
 // NodeGroupNodeBindingChange 表示节点分组绑定变更结果。
 type NodeGroupNodeBindingChange struct {
 	NodeIDs        []uint64
 	AddedNodeIDs   []uint64
 	RemovedNodeIDs []uint64
+}
+
+// PlanSubscriptionMove 表示删除套餐时被迁移到基础套餐的活动订阅。
+type PlanSubscriptionMove struct {
+	UserID         uint64
+	SubscriptionID uint64
+	OldPlanID      uint64
+	NewPlanID      uint64
+}
+
+// PlanDeleteResult 表示套餐删除的业务结果。
+type PlanDeleteResult struct {
+	PlanID             uint64
+	DefaultPlanID      uint64
+	MovedSubscriptions []PlanSubscriptionMove
 }
 
 // UserRepository 用户数据访问接口。
@@ -51,7 +72,21 @@ func (r *UserRepository) CreateWithSubscriptionToken(ctx context.Context, user *
 		if err := tx.Create(user).Error; err != nil {
 			return err
 		}
-		_, err := CreateSubscriptionTokenTx(tx, user.ID, nil, nil)
+
+		var subscriptionID *uint64
+		if tx.Migrator().HasTable(&model.Plan{}) && tx.Migrator().HasTable(&model.UserSubscription{}) {
+			plan, err := ensureDefaultPlanTx(tx)
+			if err != nil {
+				return err
+			}
+			sub, err := createDefaultSubscriptionForUserTx(tx, user.ID, plan, modelNow())
+			if err != nil {
+				return err
+			}
+			subscriptionID = &sub.ID
+		}
+
+		_, err := CreateSubscriptionTokenTx(tx, user.ID, subscriptionID, nil)
 		return err
 	})
 }
@@ -74,6 +109,80 @@ func (r *UserRepository) FindByID(ctx context.Context, id uint64) (*model.User, 
 		return nil, err
 	}
 	return &user, nil
+}
+
+// Delete 删除用户及用户侧关联数据。
+//
+// 数据库迁移中已为生产库声明外键级联；这里仍显式清理一遍，
+// 保证禁用外键的测试环境和未来迁移调整时行为一致。
+func (r *UserRepository) Delete(ctx context.Context, userID uint64) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user model.User
+		if err := tx.First(&user, userID).Error; err != nil {
+			return err
+		}
+
+		var subscriptionIDs []uint64
+		if tx.Migrator().HasTable(&model.UserSubscription{}) {
+			if err := tx.Model(&model.UserSubscription{}).
+				Where("user_id = ?", userID).
+				Pluck("id", &subscriptionIDs).Error; err != nil {
+				return err
+			}
+		}
+
+		if tx.Migrator().HasTable(&model.NodeAccessTask{}) && len(subscriptionIDs) > 0 {
+			if err := tx.Model(&model.NodeAccessTask{}).
+				Where("subscription_id IN ?", subscriptionIDs).
+				Update("subscription_id", nil).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.RedeemCode{}) {
+			if err := tx.Model(&model.RedeemCode{}).
+				Where("used_by_user_id = ?", userID).
+				Update("used_by_user_id", nil).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.PaymentRecord{}) {
+			if err := tx.Where("user_id = ?", userID).Delete(&model.PaymentRecord{}).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.Order{}) {
+			if err := tx.Where("user_id = ?", userID).Delete(&model.Order{}).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.UsageLedger{}) {
+			if err := tx.Where("user_id = ?", userID).Delete(&model.UsageLedger{}).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.TrafficSnapshot{}) && user.XrayUserKey != "" {
+			if err := tx.Where("xray_user_key = ?", user.XrayUserKey).Delete(&model.TrafficSnapshot{}).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.SubscriptionToken{}) {
+			if err := tx.Where("user_id = ?", userID).Delete(&model.SubscriptionToken{}).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.RefreshToken{}) {
+			if err := tx.Where("user_id = ?", userID).Delete(&model.RefreshToken{}).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.UserSubscription{}) {
+			if err := tx.Where("user_id = ?", userID).Delete(&model.UserSubscription{}).Error; err != nil {
+				return err
+			}
+		}
+
+		return tx.Delete(&model.User{}, userID).Error
+	})
 }
 
 // FindByXrayUserKey 根据 xray_user_key 查找用户。
@@ -352,6 +461,21 @@ func EnsureSubscriptionTokenTx(tx *gorm.DB, userID uint64, subscriptionID *uint6
 	if result.RowsAffected == 0 {
 		return CreateSubscriptionTokenTx(tx, userID, subscriptionID, expiresAt)
 	}
+	updates := map[string]interface{}{}
+	if subscriptionID != nil && (existing.SubscriptionID == nil || *existing.SubscriptionID != *subscriptionID) {
+		updates["subscription_id"] = *subscriptionID
+	}
+	if expiresAt != nil {
+		updates["expires_at"] = *expiresAt
+	}
+	if len(updates) > 0 {
+		if err := tx.Model(&model.SubscriptionToken{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+		if err := tx.First(&existing, existing.ID).Error; err != nil {
+			return nil, err
+		}
+	}
 	return &existing, nil
 }
 
@@ -544,18 +668,44 @@ func NewPlanRepository(db *gorm.DB) *PlanRepository {
 // FindByID 根据 ID 查找套餐。
 func (r *PlanRepository) FindByID(ctx context.Context, id uint64) (*model.Plan, error) {
 	var plan model.Plan
-	err := r.db.WithContext(ctx).First(&plan, id).Error
+	err := r.db.WithContext(ctx).
+		Where("id = ? AND is_deleted = ?", id, false).
+		First(&plan).Error
 	if err != nil {
 		return nil, err
 	}
 	return &plan, nil
 }
 
+// FindDefault 查询基础套餐。
+func (r *PlanRepository) FindDefault(ctx context.Context) (*model.Plan, error) {
+	var plan model.Plan
+	err := r.db.WithContext(ctx).
+		Where("is_default = ? AND is_deleted = ?", true, false).
+		Order("id ASC").
+		First(&plan).Error
+	if err != nil {
+		return nil, err
+	}
+	return &plan, nil
+}
+
+// EnsureDefault 确保系统存在一个基础套餐。
+func (r *PlanRepository) EnsureDefault(ctx context.Context) (*model.Plan, error) {
+	var plan *model.Plan
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		plan, err = ensureDefaultPlanTx(tx)
+		return err
+	})
+	return plan, err
+}
+
 // ListActive 列出所有上架套餐。
 func (r *PlanRepository) ListActive(ctx context.Context) ([]model.Plan, error) {
 	var plans []model.Plan
 	err := r.db.WithContext(ctx).
-		Where("is_active = ?", true).
+		Where("is_active = ? AND is_deleted = ?", true, false).
 		Order("sort_weight ASC, id ASC").
 		Find(&plans).Error
 	return plans, err
@@ -563,24 +713,286 @@ func (r *PlanRepository) ListActive(ctx context.Context) ([]model.Plan, error) {
 
 // Create 创建套餐。
 func (r *PlanRepository) Create(ctx context.Context, plan *model.Plan) (*model.Plan, error) {
-	err := r.db.WithContext(ctx).Create(plan).Error
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if plan.IsDefault {
+			if err := tx.Model(&model.Plan{}).Where("is_default = ?", true).Update("is_default", false).Error; err != nil {
+				return err
+			}
+			plan.IsActive = true
+			plan.IsDeleted = false
+		}
+		return tx.Create(plan).Error
+	})
 	return plan, err
 }
 
 // Update 更新套餐。
 func (r *PlanRepository) Update(ctx context.Context, plan *model.Plan) error {
-	return r.db.WithContext(ctx).Save(plan).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if plan.IsDefault {
+			plan.IsActive = true
+			plan.IsDeleted = false
+		}
+		if err := tx.Save(plan).Error; err != nil {
+			return err
+		}
+		if plan.IsDefault {
+			return tx.Model(&model.Plan{}).
+				Where("id <> ? AND is_default = ?", plan.ID, true).
+				Update("is_default", false).Error
+		}
+		return nil
+	})
 }
 
 // Delete 删除套餐。
 func (r *PlanRepository) Delete(ctx context.Context, id uint64) error {
-	return r.db.WithContext(ctx).Delete(&model.Plan{}, id).Error
+	_, err := r.DeleteWithDefaultFallback(ctx, id)
+	return err
+}
+
+// DeleteWithDefaultFallback 删除普通套餐，并把活动订阅迁移到基础套餐。
+func (r *PlanRepository) DeleteWithDefaultFallback(ctx context.Context, id uint64) (*PlanDeleteResult, error) {
+	result := &PlanDeleteResult{PlanID: id}
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var plan model.Plan
+		if err := tx.Where("id = ? AND is_deleted = ?", id, false).First(&plan).Error; err != nil {
+			return err
+		}
+		if plan.IsDefault {
+			return ErrDefaultPlanCannotDelete
+		}
+
+		defaultPlan, err := ensureDefaultPlanTxExcept(tx, id)
+		if err != nil {
+			return err
+		}
+		result.DefaultPlanID = defaultPlan.ID
+
+		now := modelNow()
+		if tx.Migrator().HasTable(&model.UserSubscription{}) {
+			var activeSubs []model.UserSubscription
+			if err := tx.
+				Where("plan_id = ? AND status = ? AND expire_date > ?", id, "ACTIVE", now).
+				Order("id ASC").
+				Find(&activeSubs).Error; err != nil {
+				return err
+			}
+			for _, sub := range activeSubs {
+				result.MovedSubscriptions = append(result.MovedSubscriptions, PlanSubscriptionMove{
+					UserID:         sub.UserID,
+					SubscriptionID: sub.ID,
+					OldPlanID:      id,
+					NewPlanID:      defaultPlan.ID,
+				})
+			}
+			if len(activeSubs) > 0 {
+				expireDate := defaultSubscriptionExpireDate(defaultPlan, now)
+				if err := tx.Model(&model.UserSubscription{}).
+					Where("plan_id = ? AND status = ? AND expire_date > ?", id, "ACTIVE", now).
+					Updates(map[string]interface{}{
+						"plan_id":        defaultPlan.ID,
+						"start_date":     now,
+						"expire_date":    expireDate,
+						"traffic_limit":  defaultPlan.TrafficLimit,
+						"used_traffic":   uint64(0),
+						"status":         "ACTIVE",
+						"active_user_id": gorm.Expr("user_id"),
+						"updated_at":     now,
+					}).Error; err != nil {
+					return err
+				}
+				for _, sub := range activeSubs {
+					if tx.Migrator().HasTable(&model.SubscriptionToken{}) {
+						if err := tx.Model(&model.SubscriptionToken{}).
+							Where("user_id = ?", sub.UserID).
+							Update("subscription_id", sub.ID).Error; err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+
+		if tx.Migrator().HasTable("plan_node_groups") {
+			if err := tx.Exec("DELETE FROM plan_node_groups WHERE plan_id = ?", id).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Model(&model.Plan{}).
+			Where("id = ?", id).
+			Updates(map[string]interface{}{
+				"is_active":  false,
+				"is_deleted": true,
+				"updated_at": now,
+			}).Error; err != nil {
+			return err
+		}
+		return ensureDefaultSubscriptionsForAllUsersTx(tx, defaultPlan, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// EnsureDefaultSubscriptions 确保没有有效订阅的用户拥有基础套餐订阅。
+func (r *PlanRepository) EnsureDefaultSubscriptions(ctx context.Context) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		plan, err := ensureDefaultPlanTx(tx)
+		if err != nil {
+			return err
+		}
+		return ensureDefaultSubscriptionsForAllUsersTx(tx, plan, modelNow())
+	})
+}
+
+func ensureDefaultPlanTx(tx *gorm.DB) (*model.Plan, error) {
+	return ensureDefaultPlanTxExcept(tx, 0)
+}
+
+func ensureDefaultPlanTxExcept(tx *gorm.DB, excludeID uint64) (*model.Plan, error) {
+	var defaults []model.Plan
+	defaultQuery := tx.Where("is_default = ? AND is_deleted = ?", true, false)
+	if excludeID > 0 {
+		defaultQuery = defaultQuery.Where("id <> ?", excludeID)
+	}
+	if err := defaultQuery.Order("id ASC").Find(&defaults).Error; err != nil {
+		return nil, err
+	}
+	if len(defaults) > 0 {
+		keep := defaults[0]
+		if len(defaults) > 1 {
+			ids := make([]uint64, 0, len(defaults)-1)
+			for _, plan := range defaults[1:] {
+				ids = append(ids, plan.ID)
+			}
+			if err := tx.Model(&model.Plan{}).Where("id IN ?", ids).Update("is_default", false).Error; err != nil {
+				return nil, err
+			}
+		}
+		if !keep.IsActive {
+			if err := tx.Model(&model.Plan{}).Where("id = ?", keep.ID).Update("is_active", true).Error; err != nil {
+				return nil, err
+			}
+			keep.IsActive = true
+		}
+		return &keep, nil
+	}
+
+	var existing model.Plan
+	existingQuery := tx.Where("is_deleted = ?", false)
+	if excludeID > 0 {
+		existingQuery = existingQuery.Where("id <> ?", excludeID)
+	}
+	result := existingQuery.Order("sort_weight ASC, id ASC").Limit(1).Find(&existing)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected > 0 {
+		if err := tx.Model(&model.Plan{}).
+			Where("id = ?", existing.ID).
+			Updates(map[string]interface{}{
+				"is_default": true,
+				"is_active":  true,
+			}).Error; err != nil {
+			return nil, err
+		}
+		existing.IsDefault = true
+		existing.IsActive = true
+		return &existing, nil
+	}
+
+	plan := &model.Plan{
+		Name:         defaultPlanName,
+		Price:        0,
+		Currency:     "USDT",
+		TrafficLimit: 0,
+		DurationDays: defaultPlanDurationDays,
+		SortWeight:   -1000,
+		IsActive:     true,
+		IsDefault:    true,
+		IsDeleted:    false,
+	}
+	if err := tx.Create(plan).Error; err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
+func createDefaultSubscriptionForUserTx(tx *gorm.DB, userID uint64, plan *model.Plan, now time.Time) (*model.UserSubscription, error) {
+	expireDate := defaultSubscriptionExpireDate(plan, now)
+	activeUserID := userID
+	sub := &model.UserSubscription{
+		UserID:       userID,
+		PlanID:       plan.ID,
+		StartDate:    now,
+		ExpireDate:   expireDate,
+		TrafficLimit: plan.TrafficLimit,
+		UsedTraffic:  0,
+		Status:       "ACTIVE",
+		ActiveUserID: &activeUserID,
+	}
+	if err := tx.Create(sub).Error; err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
+func ensureDefaultSubscriptionsForAllUsersTx(tx *gorm.DB, plan *model.Plan, now time.Time) error {
+	if !tx.Migrator().HasTable(&model.User{}) || !tx.Migrator().HasTable(&model.UserSubscription{}) {
+		return nil
+	}
+	if err := tx.Model(&model.UserSubscription{}).
+		Where("status = ? AND expire_date <= ?", "ACTIVE", now).
+		Updates(map[string]interface{}{
+			"status":         "EXPIRED",
+			"active_user_id": nil,
+			"updated_at":     now,
+		}).Error; err != nil {
+		return err
+	}
+
+	var users []model.User
+	if err := tx.Model(&model.User{}).
+		Where("NOT EXISTS (SELECT 1 FROM user_subscriptions s WHERE s.user_id = users.id AND s.status = ? AND s.expire_date > ?)", "ACTIVE", now).
+		Order("id ASC").
+		Find(&users).Error; err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		return nil
+	}
+
+	for _, user := range users {
+		sub, err := createDefaultSubscriptionForUserTx(tx, user.ID, plan, now)
+		if err != nil {
+			return err
+		}
+		if tx.Migrator().HasTable(&model.SubscriptionToken{}) {
+			if err := tx.Model(&model.SubscriptionToken{}).
+				Where("user_id = ?", user.ID).
+				Update("subscription_id", sub.ID).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func defaultSubscriptionExpireDate(plan *model.Plan, now time.Time) time.Time {
+	days := int(plan.DurationDays)
+	if days <= 0 {
+		days = defaultPlanDurationDays
+	}
+	return now.AddDate(0, 0, days)
 }
 
 // ListAll 列出所有套餐（含已下架）。
 func (r *PlanRepository) ListAll(ctx context.Context) ([]model.Plan, error) {
 	var plans []model.Plan
 	err := r.db.WithContext(ctx).
+		Where("is_deleted = ?", false).
 		Order("sort_weight ASC, id ASC").
 		Find(&plans).Error
 	return plans, err
@@ -589,7 +1001,7 @@ func (r *PlanRepository) ListAll(ctx context.Context) ([]model.Plan, error) {
 // Count 统计套餐数量。
 func (r *PlanRepository) Count(ctx context.Context) (int64, error) {
 	var total int64
-	err := r.db.WithContext(ctx).Model(&model.Plan{}).Count(&total).Error
+	err := r.db.WithContext(ctx).Model(&model.Plan{}).Where("is_deleted = ?", false).Count(&total).Error
 	return total, err
 }
 

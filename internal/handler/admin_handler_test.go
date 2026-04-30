@@ -57,6 +57,10 @@ func setupTestAdminApp(t *testing.T) (*gin.Engine, string) {
 		&model.NodeGroupNode{},
 		&model.Node{},
 		&model.NodeAccessTask{},
+		&model.RedeemCode{},
+		&model.Order{},
+		&model.PaymentRecord{},
+		&model.TrafficSnapshot{},
 		&model.UsageLedger{},
 		&PlanNodeGroup{},
 	))
@@ -138,8 +142,11 @@ func setupTestAdminApp(t *testing.T) (*gin.Engine, string) {
 
 		adminGroup.GET("/users", adminUserHandler.List)
 		adminGroup.POST("/users", adminUserHandler.Create)
+		adminGroup.DELETE("/users/:id", adminUserHandler.Delete)
 		adminGroup.PUT("/users/:id/status", adminUserHandler.ToggleStatus)
 		adminGroup.PUT("/users/:id/password", adminUserHandler.ResetPassword)
+		adminGroup.GET("/users/:id/subscription", adminUserHandler.GetSubscription)
+		adminGroup.PUT("/users/:id/subscription", adminUserHandler.UpsertSubscription)
 		adminGroup.GET("/users/:id/usage", usageHandler.GetAdminUserUsage)
 
 		// 订阅 Token 管理
@@ -182,6 +189,10 @@ func setupTestAdminAppWithDB(t *testing.T) (*gin.Engine, string, *gorm.DB) {
 		&model.NodeGroupNode{},
 		&model.Node{},
 		&model.NodeAccessTask{},
+		&model.RedeemCode{},
+		&model.Order{},
+		&model.PaymentRecord{},
+		&model.TrafficSnapshot{},
 		&model.UsageLedger{},
 		&PlanNodeGroup{},
 	))
@@ -263,8 +274,11 @@ func setupTestAdminAppWithDB(t *testing.T) (*gin.Engine, string, *gorm.DB) {
 
 		adminGroup.GET("/users", adminUserHandler.List)
 		adminGroup.POST("/users", adminUserHandler.Create)
+		adminGroup.DELETE("/users/:id", adminUserHandler.Delete)
 		adminGroup.PUT("/users/:id/status", adminUserHandler.ToggleStatus)
 		adminGroup.PUT("/users/:id/password", adminUserHandler.ResetPassword)
+		adminGroup.GET("/users/:id/subscription", adminUserHandler.GetSubscription)
+		adminGroup.PUT("/users/:id/subscription", adminUserHandler.UpsertSubscription)
 		adminGroup.GET("/users/:id/usage", usageHandler.GetAdminUserUsage)
 
 		// 订阅 Token 管理
@@ -299,6 +313,13 @@ func (PlanNodeGroup) TableName() string { return "plan_node_groups" }
 // generateAdminToken 辅助函数：生成管理员 JWT Token。
 func generateAdminToken(cfg *config.Config, userID uint64, username string, isAdmin bool) (string, error) {
 	return auth.GenerateToken(userID, username, isAdmin, cfg.JWTSecret, time.Now().Add(cfg.JWTExpiresIn))
+}
+
+func assertCountZero(t *testing.T, db *gorm.DB, model interface{}, query string, args ...interface{}) {
+	t.Helper()
+	var count int64
+	require.NoError(t, db.Model(model).Where(query, args...).Count(&count).Error)
+	assert.Equal(t, int64(0), count)
 }
 
 // TestAdminHandler_CreatePlan_Success 测试创建套餐成功。
@@ -419,6 +440,140 @@ func TestAdminUserHandler_Create_Duplicate(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// TestAdminUserHandler_Delete 测试管理员删除用户并清理关联数据。
+func TestAdminUserHandler_Delete(t *testing.T) {
+	r, adminToken, db := setupTestAdminAppWithDB(t)
+
+	plan := &model.Plan{
+		Name:         "Delete User Plan",
+		Price:        1,
+		Currency:     "USDT",
+		TrafficLimit: 1024,
+		DurationDays: 30,
+		IsActive:     true,
+	}
+	require.NoError(t, db.Create(plan).Error)
+
+	user := &model.User{
+		UUID:        "delete-user-uuid",
+		Username:    "deleteuser",
+		XrayUserKey: "deleteuser@test.local",
+		Status:      "active",
+		IsAdmin:     false,
+	}
+	require.NoError(t, db.Create(user).Error)
+
+	node := &model.Node{Name: "Delete User Node", Host: "127.0.0.1", Port: 443, IsEnabled: true}
+	require.NoError(t, db.Create(node).Error)
+
+	activeUserID := user.ID
+	sub := &model.UserSubscription{
+		UserID:       user.ID,
+		PlanID:       plan.ID,
+		StartDate:    time.Now().Add(-time.Hour),
+		ExpireDate:   time.Now().AddDate(0, 0, 30),
+		TrafficLimit: 1024,
+		UsedTraffic:  128,
+		Status:       "ACTIVE",
+		ActiveUserID: &activeUserID,
+	}
+	require.NoError(t, db.Create(sub).Error)
+	subID := sub.ID
+
+	require.NoError(t, db.Create(&model.SubscriptionToken{
+		UserID:         user.ID,
+		SubscriptionID: &subID,
+		Token:          "delete-user-token",
+		IsRevoked:      false,
+	}).Error)
+	require.NoError(t, db.Create(&model.RefreshToken{
+		UserID:    user.ID,
+		TokenHash: "delete-user-refresh",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}).Error)
+
+	order := &model.Order{UserID: user.ID, PlanID: plan.ID, OrderNo: "ORD-DELETE-USER", Amount: 1, Status: "PENDING"}
+	require.NoError(t, db.Create(order).Error)
+	require.NoError(t, db.Create(&model.PaymentRecord{
+		OrderID: order.ID,
+		UserID:  user.ID,
+		TxID:    "tx-delete-user",
+		Amount:  1,
+		Status:  "CONFIRMED",
+	}).Error)
+	require.NoError(t, db.Create(&model.UsageLedger{
+		UserID:         user.ID,
+		SubscriptionID: &subID,
+		NodeID:         node.ID,
+		DeltaUpload:    10,
+		DeltaDownload:  20,
+		DeltaTotal:     30,
+		RecordedAt:     time.Now(),
+	}).Error)
+	require.NoError(t, db.Create(&model.TrafficSnapshot{
+		NodeID:        node.ID,
+		XrayUserKey:   user.XrayUserKey,
+		UplinkTotal:   10,
+		DownlinkTotal: 20,
+		CapturedAt:    time.Now(),
+	}).Error)
+	usedAt := time.Now()
+	require.NoError(t, db.Create(&model.RedeemCode{
+		Code:         "DELETE-USER-CODE",
+		PlanID:       plan.ID,
+		DurationDays: 30,
+		IsUsed:       true,
+		UsedByUserID: &user.ID,
+		UsedAt:       &usedAt,
+	}).Error)
+	task := &model.NodeAccessTask{
+		NodeID:         node.ID,
+		SubscriptionID: &subID,
+		Action:         "remove_user",
+		Status:         "PENDING",
+		ScheduledAt:    time.Now(),
+		IdempotencyKey: "delete-user-task",
+	}
+	require.NoError(t, db.Create(task).Error)
+
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/admin/users/%d", user.ID), nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.ErrorIs(t, db.First(&model.User{}, user.ID).Error, gorm.ErrRecordNotFound)
+
+	assertCountZero(t, db, &model.UserSubscription{}, "user_id = ?", user.ID)
+	assertCountZero(t, db, &model.SubscriptionToken{}, "user_id = ?", user.ID)
+	assertCountZero(t, db, &model.RefreshToken{}, "user_id = ?", user.ID)
+	assertCountZero(t, db, &model.Order{}, "user_id = ?", user.ID)
+	assertCountZero(t, db, &model.PaymentRecord{}, "user_id = ?", user.ID)
+	assertCountZero(t, db, &model.UsageLedger{}, "user_id = ?", user.ID)
+	assertCountZero(t, db, &model.TrafficSnapshot{}, "xray_user_key = ?", user.XrayUserKey)
+
+	var code model.RedeemCode
+	require.NoError(t, db.Where("code = ?", "DELETE-USER-CODE").First(&code).Error)
+	assert.Nil(t, code.UsedByUserID)
+
+	var updatedTask model.NodeAccessTask
+	require.NoError(t, db.First(&updatedTask, task.ID).Error)
+	assert.Nil(t, updatedTask.SubscriptionID)
+}
+
+// TestAdminUserHandler_DeleteSelf_Rejected 测试禁止管理员删除当前登录账号。
+func TestAdminUserHandler_DeleteSelf_Rejected(t *testing.T) {
+	r, adminToken, db := setupTestAdminAppWithDB(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users/1", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	require.NoError(t, db.First(&model.User{}, 1).Error)
+}
+
 // TestAdminHandler_UnauthorizedAccess 测试非管理员访问管理接口返回 403。
 func TestAdminHandler_UnauthorizedAccess(t *testing.T) {
 	r, _ := setupTestAdminApp(t)
@@ -477,13 +632,73 @@ func TestAdminHandler_DeletePlan(t *testing.T) {
 	createReq.Header.Set("Content-Type", "application/json")
 	createW := httptest.NewRecorder()
 	r.ServeHTTP(createW, createReq)
+	require.Equal(t, http.StatusOK, createW.Code)
+	var createResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(createW.Body.Bytes(), &createResp))
+	planID := createResp["data"].(map[string]interface{})["id"]
 
-	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/admin/plans/2", nil)
+	deleteReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/admin/plans/%.0f", planID), nil)
 	deleteReq.Header.Set("Authorization", "Bearer "+token)
 	deleteW := httptest.NewRecorder()
 	r.ServeHTTP(deleteW, deleteReq)
 
 	assert.Equal(t, http.StatusOK, deleteW.Code)
+}
+
+// TestAdminHandler_DeletePlan_InUse 测试删除已被订阅使用的普通套餐时自动迁移到基础套餐。
+func TestAdminHandler_DeletePlan_InUse(t *testing.T) {
+	r, token, db := setupTestAdminAppWithDB(t)
+
+	basePlan := &model.Plan{Name: "base-plan", Price: 0, TrafficLimit: 0, DurationDays: 3650, IsActive: true, IsDefault: true}
+	require.NoError(t, db.Create(basePlan).Error)
+	plan := &model.Plan{Name: "in-use-plan", Price: 5.0, TrafficLimit: 1024, DurationDays: 7, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	sub := &model.UserSubscription{
+		UserID:       1,
+		PlanID:       plan.ID,
+		StartDate:    time.Now(),
+		ExpireDate:   time.Now().AddDate(0, 0, 7),
+		TrafficLimit: plan.TrafficLimit,
+		Status:       "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/admin/plans/%d", plan.ID), nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+token)
+	deleteW := httptest.NewRecorder()
+	r.ServeHTTP(deleteW, deleteReq)
+
+	assert.Equal(t, http.StatusOK, deleteW.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(deleteW.Body.Bytes(), &resp))
+	assert.Equal(t, float64(1), resp["data"].(map[string]interface{})["moved_subscription_count"])
+
+	var updatedSub model.UserSubscription
+	require.NoError(t, db.First(&updatedSub, sub.ID).Error)
+	assert.Equal(t, basePlan.ID, updatedSub.PlanID)
+	assert.Equal(t, uint64(0), updatedSub.UsedTraffic)
+
+	var deletedPlan model.Plan
+	require.NoError(t, db.First(&deletedPlan, plan.ID).Error)
+	assert.True(t, deletedPlan.IsDeleted)
+}
+
+// TestAdminHandler_DeletePlan_Default 测试基础套餐不能删除。
+func TestAdminHandler_DeletePlan_Default(t *testing.T) {
+	r, token, db := setupTestAdminAppWithDB(t)
+
+	basePlan := &model.Plan{Name: "base-plan", Price: 0, TrafficLimit: 0, DurationDays: 3650, IsActive: true, IsDefault: true}
+	require.NoError(t, db.Create(basePlan).Error)
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/admin/plans/%d", basePlan.ID), nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+token)
+	deleteW := httptest.NewRecorder()
+	r.ServeHTTP(deleteW, deleteReq)
+
+	assert.Equal(t, http.StatusBadRequest, deleteW.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(deleteW.Body.Bytes(), &resp))
+	assert.Contains(t, resp["message"].(string), "基础套餐不能删除")
 }
 
 // TestAdminHandler_UpdateNodeGroup 测试更新节点分组。

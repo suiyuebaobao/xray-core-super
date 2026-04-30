@@ -296,7 +296,7 @@ func TestAuthHandler_Register_NoBody(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-// TestAuthHandler_GetMe_WithSubscription 测试 GetMe 返回订阅信息。
+// TestAuthHandler_GetMe_WithSubscription 测试注册后 GetMe 返回基础套餐订阅信息。
 func TestAuthHandler_GetMe_WithSubscription(t *testing.T) {
 	r, _ := setupAuthHandlerTest(t)
 
@@ -328,8 +328,9 @@ func TestAuthHandler_GetMe_WithSubscription(t *testing.T) {
 	assert.True(t, meResp["success"].(bool))
 	data := meResp["data"].(map[string]interface{})
 	assert.NotNil(t, data["user"])
-	// 没有订阅时，subscription 字段应为 nil
-	assert.Nil(t, data["subscription"])
+	assert.NotNil(t, data["subscription"])
+	subscription := data["subscription"].(map[string]interface{})
+	assert.Equal(t, "ACTIVE", subscription["status"])
 }
 
 // TestAuthHandler_GetMe_InvalidToken 测试无效 Token 访问 GetMe。

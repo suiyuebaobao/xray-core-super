@@ -106,7 +106,7 @@ func main() {
 
 	// 管理后台 Handler
 	adminDashboardHandler := handler.NewAdminDashboardHandler(userRepo, nodeRepo, planRepo, subRepo)
-	adminPlanHandler := handler.NewAdminPlanHandler(planRepo, nodeGroupRepo)
+	adminPlanHandler := handler.NewAdminPlanHandlerWithSync(planRepo, nodeGroupRepo, nodeAccessSvc)
 	adminNodeGroupHandler := handler.NewAdminNodeGroupHandlerWithNodes(nodeGroupRepo, nodeRepo, nodeAccessSvc)
 	adminNodeHandler := handler.NewAdminNodeHandlerWithSync(nodeRepo, subRepo, nodeAccessSvc)
 	adminRelayHandler := handler.NewAdminRelayHandler(relayRepo, relayBackendRepo, relaySvc)
@@ -228,6 +228,7 @@ func main() {
 		// 用户管理
 		adminGroup.GET("/users", adminUserHandler.List)
 		adminGroup.POST("/users", adminUserHandler.Create)
+		adminGroup.DELETE("/users/:id", adminUserHandler.Delete)
 		adminGroup.PUT("/users/:id/status", adminUserHandler.ToggleStatus)
 		adminGroup.PUT("/users/:id/password", adminUserHandler.ResetPassword)
 		adminGroup.GET("/users/:id/subscription", adminUserHandler.GetSubscription)

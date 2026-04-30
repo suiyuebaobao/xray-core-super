@@ -88,6 +88,13 @@ test('admin and user pages render against live API', async ({ page }) => {
   await expect(page.getByText('套餐状态').first()).toBeVisible()
   await expect(page.getByText('Token状态').first()).toBeVisible()
   await expect(page.getByText('/sub/').first()).toBeVisible()
+  const firstTokenRow = page.locator('.admin-subscription-tokens .el-table__body-wrapper tbody tr').first()
+  await firstTokenRow.getByText('Base64').click()
+  await expect(firstTokenRow.locator('.link-preview')).toContainText('/base64')
+  await firstTokenRow.getByText('URI').click()
+  await expect(firstTokenRow.locator('.link-preview')).toContainText('/plain')
+  await firstTokenRow.getByText('Clash').click()
+  await expect(firstTokenRow.locator('.link-preview')).toContainText('/clash')
 
   await page.goto('/admin/users')
   await page.waitForLoadState('networkidle')

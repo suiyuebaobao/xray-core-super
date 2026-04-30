@@ -120,20 +120,15 @@
         <p style="color: #606266; font-size: 14px; margin-bottom: 16px">点击下方链接在对应的代理客户端中导入订阅。</p>
 
         <div class="sub-links">
+          <el-radio-group v-model="selectedFormat" size="large" class="format-selector">
+            <el-radio-button v-for="format in subscriptionFormats" :key="format.value" :value="format.value">
+              {{ format.label }}
+            </el-radio-button>
+          </el-radio-group>
           <div class="sub-link-item">
-            <div class="link-label">Clash / mihomo</div>
-            <div class="link-url">{{ clashUrl }}</div>
-            <el-button size="small" type="primary" @click="copyUrl(clashUrl)">复制链接</el-button>
-          </div>
-          <div class="sub-link-item">
-            <div class="link-label">Base64 聚合订阅</div>
-            <div class="link-url">{{ base64Url }}</div>
-            <el-button size="small" type="primary" @click="copyUrl(base64Url)">复制链接</el-button>
-          </div>
-          <div class="sub-link-item">
-            <div class="link-label">纯文本 URI</div>
-            <div class="link-url">{{ plainUrl }}</div>
-            <el-button size="small" type="primary" @click="copyUrl(plainUrl)">复制链接</el-button>
+            <div class="link-label">{{ selectedFormatLabel }}</div>
+            <div class="link-url">{{ selectedSubscriptionUrl }}</div>
+            <el-button size="small" type="primary" @click="copyUrl(selectedSubscriptionUrl)">复制链接</el-button>
           </div>
         </div>
 
@@ -162,10 +157,16 @@ const usageData = ref(null)
 const loading = ref(false)
 const usageLoading = ref(false)
 const usageTab = ref('daily')
+const selectedFormat = ref('clash')
 
-const clashUrl = computed(() => subscription.value ? `${window.location.origin}/sub/${subscription.value.tokens?.[0] || ''}/clash` : '')
-const base64Url = computed(() => subscription.value ? `${window.location.origin}/sub/${subscription.value.tokens?.[0] || ''}/base64` : '')
-const plainUrl = computed(() => subscription.value ? `${window.location.origin}/sub/${subscription.value.tokens?.[0] || ''}/plain` : '')
+const subscriptionFormats = [
+  { value: 'clash', label: 'Clash / mihomo' },
+  { value: 'base64', label: 'Base64' },
+  { value: 'plain', label: 'URI' },
+]
+
+const selectedSubscriptionUrl = computed(() => subscriptionUrl(selectedFormat.value))
+const selectedFormatLabel = computed(() => subscriptionFormats.find((item) => item.value === selectedFormat.value)?.label || 'Clash / mihomo')
 
 const trafficPercent = computed(() => {
   if (!subscription.value || !subscription.value.traffic_limit) return 0
@@ -205,11 +206,17 @@ function formatBytes(bytes) {
 }
 
 function copyUrl(url) {
+  if (!url) return
   navigator.clipboard.writeText(url).then(() => {
     ElMessage.success('已复制到剪贴板')
   }).catch(() => {
     ElMessage.error('复制失败，请手动复制')
   })
+}
+
+function subscriptionUrl(format) {
+  const token = subscription.value?.tokens?.[0]
+  return token ? `${window.location.origin}/sub/${token}/${format}` : ''
 }
 
 async function fetchSubscription() {
@@ -291,6 +298,9 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+.format-selector {
+  align-self: flex-start;
 }
 .sub-link-item {
   display: flex;

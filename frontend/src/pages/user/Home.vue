@@ -43,10 +43,15 @@
             </div>
             <!-- 订阅链接快速复制 -->
             <div v-if="subscription.tokens?.length > 0" class="sub-quick-link">
-              <div class="link-label">Clash 订阅链接</div>
-              <el-input :model-value="getClashUrl()" readonly size="small">
+              <el-radio-group v-model="quickFormat" size="small" class="quick-format">
+                <el-radio-button value="clash">Clash</el-radio-button>
+                <el-radio-button value="base64">Base64</el-radio-button>
+                <el-radio-button value="plain">URI</el-radio-button>
+              </el-radio-group>
+              <div class="link-label">{{ quickFormatLabel }} 订阅链接</div>
+              <el-input :model-value="getSubscriptionUrl(quickFormat)" readonly size="small">
                 <template #append>
-                  <el-button @click="copyUrl(getClashUrl())">复制</el-button>
+                  <el-button @click="copyUrl(getSubscriptionUrl(quickFormat))">复制</el-button>
                 </template>
               </el-input>
             </div>
@@ -88,6 +93,15 @@ import { ElMessage } from 'element-plus'
 const userStore = useUserStore()
 const subscription = ref(null)
 const loading = ref(false)
+const quickFormat = ref('clash')
+
+const subscriptionFormats = [
+  { value: 'clash', label: 'Clash' },
+  { value: 'base64', label: 'Base64' },
+  { value: 'plain', label: 'URI' },
+]
+
+const quickFormatLabel = computed(() => subscriptionFormats.find((item) => item.value === quickFormat.value)?.label || 'Clash')
 
 const trafficPercent = computed(() => {
   if (!subscription.value || !subscription.value.traffic_limit) return 0
@@ -158,6 +172,7 @@ onMounted(() => {
 })
 
 function copyUrl(url) {
+  if (!url) return
   navigator.clipboard.writeText(url).then(() => {
     ElMessage.success('已复制到剪贴板')
   }).catch(() => {
@@ -165,9 +180,9 @@ function copyUrl(url) {
   })
 }
 
-function getClashUrl() {
+function getSubscriptionUrl(format) {
   if (!subscription.value || !subscription.value.tokens?.[0]) return ''
-  return `${window.location.origin}/sub/${subscription.value.tokens[0]}/clash`
+  return `${window.location.origin}/sub/${subscription.value.tokens[0]}/${format}`
 }
 </script>
 
@@ -186,6 +201,9 @@ function getClashUrl() {
 }
 .sub-quick-link {
   margin-top: 12px;
+}
+.quick-format {
+  margin-bottom: 8px;
 }
 .sub-quick-link .link-label {
   font-size: 13px;

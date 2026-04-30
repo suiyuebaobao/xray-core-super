@@ -31,6 +31,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -88,6 +89,7 @@ type Config struct {
 }
 
 const defaultHAProxyStatsSocketPath = "/tmp/haproxy.sock"
+const defaultXrayAPIServer = "127.0.0.1:10085"
 
 // loadConfig 从环境变量加载配置。
 func loadConfig() *Config {
@@ -96,7 +98,7 @@ func loadConfig() *Config {
 		AgentRole:         getEnv("AGENT_ROLE", "exit"),
 		XrayConfigPath:    getEnv("XRAY_CONFIG_PATH", "/etc/xray/config.json"),
 		XrayRestartCmd:    getEnv("XRAY_RESTART_CMD", "systemctl restart xray"),
-		XrayAPIServer:     getEnv("XRAY_API_SERVER", ""),
+		XrayAPIServer:     getEnv("XRAY_API_SERVER", defaultXrayAPIServer),
 		XrayBinary:        getEnv("XRAY_BINARY", "xray"),
 		HAProxyConfigPath: getEnv("HAPROXY_CONFIG_PATH", "/etc/haproxy/haproxy.cfg"),
 		HAProxyPIDPath:    getEnv("HAPROXY_PID_PATH", "/tmp/haproxy.pid"),
@@ -513,9 +515,33 @@ func (a *Agent) generateDefaultXrayConfig() error {
   "log": {
     "loglevel": "warning"
   },
+  "api": {
+    "tag": "api",
+    "services": ["StatsService"]
+  },
+  "stats": {},
+  "policy": {
+    "levels": {
+      "0": {
+        "statsUserUplink": true,
+        "statsUserDownlink": true
+      }
+    },
+    "system": {
+      "statsInboundUplink": true,
+      "statsInboundDownlink": true,
+      "statsOutboundUplink": true,
+      "statsOutboundDownlink": true
+    }
+  },
   "routing": {
     "domainStrategy": "AsIs",
     "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["api"],
+        "outboundTag": "api"
+      },
       {
         "type": "field",
         "outboundTag": "blocked",
@@ -524,6 +550,15 @@ func (a *Agent) generateDefaultXrayConfig() error {
     ]
   },
   "inbounds": [
+    {
+      "tag": "api",
+      "listen": "127.0.0.1",
+      "port": 10085,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "127.0.0.1"
+      }
+    },
     {
       "protocol": "vless",
       "port": 443,
@@ -553,12 +588,247 @@ func (a *Agent) generateDefaultXrayConfig() error {
     {
       "protocol": "freedom",
       "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "blocked"
     }
   ]
 }`, privateKey, publicKey)
 
 	os.MkdirAll(filepath.Dir(a.cfg.XrayConfigPath), 0755)
 	return os.WriteFile(a.cfg.XrayConfigPath, []byte(config), 0644)
+}
+
+func (a *Agent) ensureXrayStatsConfig() error {
+	rawData, err := os.ReadFile(a.cfg.XrayConfigPath)
+	if err != nil {
+		return fmt.Errorf("read xray config: %w", err)
+	}
+
+	var rawCfg map[string]interface{}
+	if err := json.Unmarshal(rawData, &rawCfg); err != nil {
+		return fmt.Errorf("parse xray config: %w", err)
+	}
+
+	changed, err := ensureXrayStatsConfigMap(rawCfg, a.cfg.XrayAPIServer)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+
+	newData, err := json.MarshalIndent(rawCfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal xray config: %w", err)
+	}
+
+	backupPath := a.cfg.XrayConfigPath + ".bak"
+	if err := os.WriteFile(backupPath, rawData, 0644); err != nil {
+		log.Printf("[agent] backup xray config failed: %v", err)
+	}
+	if err := os.WriteFile(a.cfg.XrayConfigPath, newData, 0644); err != nil {
+		return fmt.Errorf("write xray config: %w", err)
+	}
+
+	if err := a.restartXray(); err != nil {
+		_ = os.WriteFile(a.cfg.XrayConfigPath, rawData, 0644)
+		_ = a.restartXray()
+		return fmt.Errorf("restart xray after stats config update: %w", err)
+	}
+	log.Printf("[agent] xray stats api enabled at %s", a.cfg.XrayAPIServer)
+	return nil
+}
+
+func ensureXrayStatsConfigMap(rawCfg map[string]interface{}, apiServer string) (bool, error) {
+	listenHost, listenPort, err := parseXrayAPIServer(apiServer)
+	if err != nil {
+		return false, err
+	}
+
+	changed := false
+	changed = setMapValue(rawCfg, "api", map[string]interface{}{
+		"tag":      "api",
+		"services": []interface{}{"StatsService"},
+	}) || changed
+	if _, ok := rawCfg["stats"].(map[string]interface{}); !ok {
+		rawCfg["stats"] = map[string]interface{}{}
+		changed = true
+	}
+
+	policy, policyChanged := ensureObject(rawCfg, "policy")
+	changed = policyChanged || changed
+	levels, levelsChanged := ensureObject(policy, "levels")
+	changed = levelsChanged || changed
+	level0, levelChanged := ensureObject(levels, "0")
+	changed = levelChanged || changed
+	changed = setMapValue(level0, "statsUserUplink", true) || changed
+	changed = setMapValue(level0, "statsUserDownlink", true) || changed
+	system, systemChanged := ensureObject(policy, "system")
+	changed = systemChanged || changed
+	for _, key := range []string{"statsInboundUplink", "statsInboundDownlink", "statsOutboundUplink", "statsOutboundDownlink"} {
+		changed = setMapValue(system, key, true) || changed
+	}
+
+	inbounds, ok := rawCfg["inbounds"].([]interface{})
+	if !ok {
+		return false, fmt.Errorf("xray config inbounds is missing or invalid")
+	}
+	apiInbound := map[string]interface{}{
+		"tag":      "api",
+		"listen":   listenHost,
+		"port":     float64(listenPort),
+		"protocol": "dokodemo-door",
+		"settings": map[string]interface{}{
+			"address": "127.0.0.1",
+		},
+	}
+	apiInboundIdx := findTaggedObject(inbounds, "api")
+	if apiInboundIdx < 0 {
+		rawCfg["inbounds"] = append([]interface{}{apiInbound}, inbounds...)
+		changed = true
+	} else if inboundMap, ok := inbounds[apiInboundIdx].(map[string]interface{}); ok {
+		for key, value := range apiInbound {
+			changed = setMapValue(inboundMap, key, value) || changed
+		}
+		inbounds[apiInboundIdx] = inboundMap
+		rawCfg["inbounds"] = inbounds
+	} else {
+		inbounds[apiInboundIdx] = apiInbound
+		rawCfg["inbounds"] = inbounds
+		changed = true
+	}
+
+	routing, routingChanged := ensureObject(rawCfg, "routing")
+	changed = routingChanged || changed
+	rules, _ := routing["rules"].([]interface{})
+	if !hasXrayAPIRoutingRule(rules) {
+		apiRule := map[string]interface{}{
+			"type":        "field",
+			"inboundTag":  []interface{}{"api"},
+			"outboundTag": "api",
+		}
+		routing["rules"] = append([]interface{}{apiRule}, rules...)
+		changed = true
+	}
+
+	outbounds, _ := rawCfg["outbounds"].([]interface{})
+	if findTaggedObject(outbounds, "blocked") < 0 {
+		rawCfg["outbounds"] = append(outbounds, map[string]interface{}{
+			"tag":      "blocked",
+			"protocol": "blackhole",
+		})
+		changed = true
+	}
+
+	return changed, nil
+}
+
+func parseXrayAPIServer(apiServer string) (string, int, error) {
+	apiServer = strings.TrimSpace(apiServer)
+	if apiServer == "" {
+		apiServer = defaultXrayAPIServer
+	}
+	host, portRaw, err := net.SplitHostPort(apiServer)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid XRAY_API_SERVER %q: %w", apiServer, err)
+	}
+	if host == "" || host == "localhost" {
+		host = "127.0.0.1"
+	}
+	port, err := strconv.Atoi(portRaw)
+	if err != nil || port <= 0 || port > 65535 {
+		return "", 0, fmt.Errorf("invalid XRAY_API_SERVER port %q", portRaw)
+	}
+	return host, port, nil
+}
+
+func ensureObject(parent map[string]interface{}, key string) (map[string]interface{}, bool) {
+	if obj, ok := parent[key].(map[string]interface{}); ok {
+		return obj, false
+	}
+	obj := map[string]interface{}{}
+	parent[key] = obj
+	return obj, true
+}
+
+func setMapValue(target map[string]interface{}, key string, value interface{}) bool {
+	if reflect.DeepEqual(target[key], value) {
+		return false
+	}
+	target[key] = value
+	return true
+}
+
+func findTaggedObject(items []interface{}, tag string) int {
+	for i, item := range items {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if itemMap["tag"] == tag {
+			return i
+		}
+	}
+	return -1
+}
+
+func hasXrayAPIRoutingRule(rules []interface{}) bool {
+	for _, rule := range rules {
+		ruleMap, ok := rule.(map[string]interface{})
+		if !ok || ruleMap["outboundTag"] != "api" {
+			continue
+		}
+		switch tags := ruleMap["inboundTag"].(type) {
+		case []interface{}:
+			for _, tag := range tags {
+				if tag == "api" {
+					return true
+				}
+			}
+		case []string:
+			for _, tag := range tags {
+				if tag == "api" {
+					return true
+				}
+			}
+		case string:
+			if tags == "api" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type xrayStatValue int64
+
+func (v *xrayStatValue) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("null")) {
+		*v = 0
+		return nil
+	}
+	if len(data) > 0 && data[0] == '"' {
+		var raw string
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return err
+		}
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return err
+		}
+		*v = xrayStatValue(n)
+		return nil
+	}
+
+	var n int64
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	*v = xrayStatValue(n)
+	return nil
 }
 
 // isXrayServiceInstalled 检查 xray systemd 服务是否已安装。
@@ -623,6 +893,12 @@ func (a *Agent) Run() {
 	// 检查并自动安装 xray-core
 	if err := a.ensureXrayInstalled(); err != nil {
 		log.Fatalf("[agent] xray-core setup failed: %v", err)
+	}
+	if err := a.ensureXrayStatsConfig(); err != nil {
+		log.Fatalf("[agent] xray stats setup failed: %v", err)
+	}
+	if err := a.ensureXrayProcessRunning(); err != nil {
+		log.Fatalf("[agent] xray process setup failed: %v", err)
 	}
 
 	// 加载初始流量快照
@@ -1287,6 +1563,17 @@ func (a *Agent) restartXray() error {
 	return nil
 }
 
+func (a *Agent) ensureXrayProcessRunning() error {
+	if !isContainerEnv() {
+		return nil
+	}
+	cmd := exec.Command("sh", "-c", "pidof xray >/dev/null 2>&1 || pgrep -f 'xray run' >/dev/null 2>&1")
+	if err := cmd.Run(); err == nil {
+		return nil
+	}
+	return a.restartXray()
+}
+
 // trafficCollectLoop 流量采集循环。
 func (a *Agent) trafficCollectLoop(ctx context.Context) {
 	ticker := time.NewTicker(a.cfg.ReportInterval)
@@ -1540,15 +1827,15 @@ func (a *Agent) queryXrayStats(ctx context.Context) (map[string]TrafficItem, err
 		"-pattern", "user>>>",
 		"-reset=false",
 	)
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("statsquery failed: %w", err)
+		return nil, fmt.Errorf("statsquery failed: %w, output: %s", err, strings.TrimSpace(string(output)))
 	}
 
 	var resp struct {
 		Stat []struct {
-			Name  string `json:"name"`
-			Value int64  `json:"value"`
+			Name  string        `json:"name"`
+			Value xrayStatValue `json:"value"`
 		} `json:"stat"`
 	}
 	if err := json.Unmarshal(output, &resp); err != nil {
@@ -1558,7 +1845,8 @@ func (a *Agent) queryXrayStats(ctx context.Context) (map[string]TrafficItem, err
 	stats := make(map[string]TrafficItem)
 	for _, stat := range resp.Stat {
 		parts := strings.Split(stat.Name, ">>>")
-		if len(parts) < 4 || parts[0] != "user" || parts[2] != "traffic" || stat.Value < 0 {
+		value := int64(stat.Value)
+		if len(parts) < 4 || parts[0] != "user" || parts[2] != "traffic" || value < 0 {
 			continue
 		}
 		email := parts[1]
@@ -1566,9 +1854,9 @@ func (a *Agent) queryXrayStats(ctx context.Context) (map[string]TrafficItem, err
 		item.XrayUserKey = email
 		switch parts[3] {
 		case "uplink":
-			item.UplinkTotal = uint64(stat.Value)
+			item.UplinkTotal = uint64(value)
 		case "downlink":
-			item.DownlinkTotal = uint64(stat.Value)
+			item.DownlinkTotal = uint64(value)
 		}
 		stats[email] = item
 	}

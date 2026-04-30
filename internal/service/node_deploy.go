@@ -261,6 +261,7 @@ func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string,
 		-e NODE_TOKEN=%s \
 		-e XRAY_BINARY=/usr/local/bin/xray \
 		-e XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json \
+		-e XRAY_API_SERVER=127.0.0.1:10085 \
 		-v /usr/local/etc/xray:/usr/local/etc/xray:rw \
 		suiyue/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), nodeID, shellQuote(nodeToken))
 

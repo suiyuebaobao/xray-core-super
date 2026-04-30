@@ -36,11 +36,14 @@
       <el-table-column label="订阅链接" min-width="360">
         <template #default="{ row }">
           <div class="link-cell">
-            <div class="link-preview">{{ subscriptionUrl(row.token, 'clash') }}</div>
+            <div class="link-preview">{{ subscriptionUrl(row.token, row.subscription_format || 'clash') }}</div>
             <div class="link-actions">
-              <el-button size="small" type="primary" :disabled="tokenActionDisabled(row)" @click="copySubscriptionUrl(row, 'clash')">Clash</el-button>
-              <el-button size="small" :disabled="tokenActionDisabled(row)" @click="copySubscriptionUrl(row, 'base64')">Base64</el-button>
-              <el-button size="small" :disabled="tokenActionDisabled(row)" @click="copySubscriptionUrl(row, 'plain')">URI</el-button>
+              <el-radio-group v-model="row.subscription_format" size="small">
+                <el-radio-button value="clash">Clash</el-radio-button>
+                <el-radio-button value="base64">Base64</el-radio-button>
+                <el-radio-button value="plain">URI</el-radio-button>
+              </el-radio-group>
+              <el-button size="small" type="primary" :disabled="tokenActionDisabled(row)" @click="copySubscriptionUrl(row)">复制</el-button>
             </div>
           </div>
         </template>
@@ -280,8 +283,8 @@ function subscriptionUrl(token, format) {
   return `${window.location.origin}/sub/${token}/${format}`
 }
 
-function copySubscriptionUrl(row, format) {
-  const url = subscriptionUrl(row.token, format)
+function copySubscriptionUrl(row) {
+  const url = subscriptionUrl(row.token, row.subscription_format || 'clash')
   if (!url) return
   navigator.clipboard.writeText(url).then(() => {
     ElMessage.success('订阅链接已复制')
@@ -294,7 +297,10 @@ async function fetchTokens() {
   loading.value = true
   try {
     const res = await adminApi.subscriptionTokens.list({ page: page.value, size: size.value })
-    tokens.value = res.data.tokens || []
+    tokens.value = (res.data.tokens || []).map((token) => ({
+      ...token,
+      subscription_format: token.subscription_format || 'clash',
+    }))
     total.value = res.data.total || 0
   } catch (err) {
     ElMessage.error('获取 Token 列表失败')

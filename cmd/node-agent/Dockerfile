@@ -23,8 +23,10 @@ RUN ARCH=$(uname -m) && \
       aarch64) XRAY_ARCH="linux-arm64-v8a" ;; \
       *) XRAY_ARCH="linux-64" ;; \
     esac && \
-    LATEST=$(curl -sL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep tag_name | cut -d'"' -f4) && \
-    curl -L -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${LATEST}/Xray-${XRAY_ARCH}.zip" && \
+    LATEST=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | head -1 | cut -d'"' -f4) && \
+    test -n "$LATEST" && \
+    curl -fL --retry 3 --retry-delay 2 -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${LATEST}/Xray-${XRAY_ARCH}.zip" && \
+    unzip -t /tmp/xray.zip >/dev/null && \
     unzip -o /tmp/xray.zip -d /tmp/xray && \
     cp /tmp/xray/xray /usr/local/bin/xray && \
     chmod +x /usr/local/bin/xray && \

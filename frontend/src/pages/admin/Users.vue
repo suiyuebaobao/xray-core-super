@@ -151,11 +151,14 @@
         </div>
         <div v-if="activeTokens.length">
           <div v-for="token in activeTokens" :key="token.id" class="token-row">
-            <span>{{ tokenUrl(token.token, 'clash') }}</span>
+            <span>{{ tokenUrl(token.token, token.subscription_format || 'clash') }}</span>
             <div class="token-actions">
-              <el-button size="small" type="primary" @click="copyTokenUrl(token.token, 'clash')">Clash</el-button>
-              <el-button size="small" @click="copyTokenUrl(token.token, 'base64')">Base64</el-button>
-              <el-button size="small" @click="copyTokenUrl(token.token, 'plain')">URI</el-button>
+              <el-radio-group v-model="token.subscription_format" size="small">
+                <el-radio-button value="clash">Clash</el-radio-button>
+                <el-radio-button value="base64">Base64</el-radio-button>
+                <el-radio-button value="plain">URI</el-radio-button>
+              </el-radio-group>
+              <el-button size="small" type="primary" @click="copyTokenUrl(token.token, token.subscription_format || 'clash')">复制</el-button>
             </div>
           </div>
         </div>
@@ -344,6 +347,13 @@ const createRules = {
 }
 
 const activeTokens = computed(() => subTokens.value.filter((t) => !t.is_revoked && (!t.expires_at || new Date(t.expires_at) > new Date())))
+
+function normalizeSubscriptionTokens(tokens) {
+  return (tokens || []).map((token) => ({
+    ...token,
+    subscription_format: token.subscription_format || 'clash',
+  }))
+}
 
 function formatDate(dateStr) {
   if (!dateStr) return '-'
@@ -605,7 +615,7 @@ async function handleSubscription(row) {
   try {
     const res = await adminApi.users.subscription(row.id)
     currentSubscription.value = res.data.subscription || null
-    subTokens.value = res.data.tokens || []
+    subTokens.value = normalizeSubscriptionTokens(res.data.tokens)
     if (currentSubscription.value) {
       subForm.plan_id = currentSubscription.value.plan_id
       subForm.status = currentSubscription.value.status
@@ -650,7 +660,7 @@ async function saveSubscription() {
       used_traffic: gbToBytes(subForm.usedTrafficGB),
     })
     currentSubscription.value = res.data.subscription
-    subTokens.value = res.data.tokens || []
+    subTokens.value = normalizeSubscriptionTokens(res.data.tokens)
     ElMessage.success('订阅已保存')
     await fetchUsers()
   } catch (err) {
@@ -679,7 +689,7 @@ async function resetCurrentUserToken() {
       await adminApi.subscriptionTokens.create({ user_id: currentUser.value.id })
     }
     const res = await adminApi.users.subscription(currentUser.value.id)
-    subTokens.value = res.data.tokens || []
+    subTokens.value = normalizeSubscriptionTokens(res.data.tokens)
     ElMessage.success('Token 已重置')
   } catch (err) {
     ElMessage.error(err.message || '重置失败')

@@ -1,0 +1,17 @@
+[Unit]
+Description=Suiyue Worker Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/suiyue
+EnvironmentFile=/etc/suiyue/suiyue.env
+ExecStart=/root/suiyue/bin/worker
+Restart=always
+RestartSec=3
+StandardOutput=append:/root/suiyue/logs/worker.log
+StandardError=append:/root/suiyue/logs/worker.log
+
+[Install]
+WantedBy=multi-user.target

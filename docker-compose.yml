@@ -1,0 +1,97 @@
+# suiyue（岁月）— Docker Compose
+#
+# 服务：
+# - nginx:  反向代理 + 前端静态文件
+# - api:    后端 API 服务（Gin）
+# - worker: 后台 Worker（定时任务）
+# - mysql:  MySQL 8.4 数据库
+#
+# 注意：生产环境必须设置 MYSQL_PASSWORD 和 MYSQL_ROOT_PASSWORD 环境变量。
+
+services:
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+    volumes:
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - frontend-dist:/usr/share/nginx/html:ro
+    depends_on:
+      api:
+        condition: service_started
+      frontend-build:
+        condition: service_completed_successfully
+
+  migrate:
+    image: migrate/migrate:v4.17.1
+    restart: "no"
+    volumes:
+      - ./migrations:/migrations:ro
+    command: ["-path", "/migrations", "-database", "${MIGRATE_DATABASE_URL}", "up"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      target: api
+    restart: always
+    env_file:
+      - .env
+    # 不暴露端口到宿主机，仅 nginx 访问
+    expose:
+      - "3000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      target: worker
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # 前端构建（一次性服务，构建后退出）
+  frontend-build:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: final
+    volumes:
+      - frontend-dist:/dist
+    command: sh -c "cp -r /output/* /dist/"
+
+  mysql:
+    image: mysql:8.4
+    restart: always
+    environment:
+      MYSQL_DATABASE: suiyue
+      MYSQL_USER: suiyue_user
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+    # 不暴露 3306 到宿主机，仅容器内部访问
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mysqldata:
+  frontend-dist:

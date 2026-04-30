@@ -1,0 +1,5 @@
+-- 给 nodes 表添加 SSH 连接字段，用于一键部署
+ALTER TABLE nodes ADD COLUMN ssh_host VARCHAR(255) DEFAULT '';
+ALTER TABLE nodes ADD COLUMN ssh_port INT UNSIGNED DEFAULT 22;
+ALTER TABLE nodes ADD COLUMN ssh_user VARCHAR(128) DEFAULT '';
+ALTER TABLE nodes ADD COLUMN ssh_password VARCHAR(255) DEFAULT '';

@@ -1,0 +1,17 @@
+[Unit]
+Description=Suiyue API Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/suiyue
+EnvironmentFile=/etc/suiyue/suiyue.env
+ExecStart=/root/suiyue/bin/api
+Restart=always
+RestartSec=3
+StandardOutput=append:/root/suiyue/logs/api.log
+StandardError=append:/root/suiyue/logs/api.log
+
+[Install]
+WantedBy=multi-user.target

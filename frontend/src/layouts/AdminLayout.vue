@@ -1,7 +1,7 @@
 <template>
   <el-container class="admin-layout">
     <el-aside width="220px">
-      <div class="logo">岁月订阅 · 管理后台</div>
+      <div class="logo">RayPilot · 管理后台</div>
       <el-menu :default-active="activeMenu" router background-color="#304156" text-color="#bfcbd9" active-text-color="#409eff">
         <el-menu-item index="/admin">
           <el-icon><HomeFilled /></el-icon>

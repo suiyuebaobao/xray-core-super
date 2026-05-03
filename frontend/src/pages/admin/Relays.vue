@@ -173,7 +173,7 @@
           <el-input v-model="deployForm.ssh_password" type="password" show-password />
         </el-form-item>
         <el-form-item label="中转名称" prop="relay_name">
-          <el-input v-model="deployForm.relay_name" placeholder="可选，默认为 suiyue-relay-IP" />
+          <el-input v-model="deployForm.relay_name" placeholder="可选，默认为 raypilot-relay-IP" />
         </el-form-item>
         <el-form-item label="中心服务地址" prop="center_url">
           <el-input v-model="deployForm.center_url" placeholder="例如：http://156.238.231.216" />

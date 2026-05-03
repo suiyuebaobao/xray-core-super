@@ -1,89 +1,136 @@
-# xray-core-super
+# RayPilot - Xray / VLESS Reality VPN & Proxy Subscription Panel
 
-`xray-core-super` 是一套围绕 `xray-core` 节点构建的订阅分发、用户管理和节点运维系统，包含 Go 后端、Vue 管理后台、用户中心、节点 agent、数据库迁移和 Docker Compose 部署配置。
+**Self-hosted Xray panel for VPN/proxy services, VLESS Reality nodes, Clash/mihomo subscriptions, relay nodes, traffic accounting, and one-click node deployment.**
 
-## 功能
+RayPilot is a self-hosted control panel for Xray-core proxy and VPN-like services. It provides a Go API, Vue admin console, user portal, subscription delivery, exit-node agent, relay-node management, traffic accounting, database migrations, and Docker/systemd deployment assets.
 
-- 用户注册、登录、JWT 鉴权和 Refresh Token 刷新
-- 套餐、订单、兑换码、订阅 Token 管理
-- Clash/mihomo YAML、Base64 聚合、纯文本 URI 订阅输出
-- 节点分组、出口节点授权和用户访问同步
-- VLESS + Reality 节点参数管理
-- 直连线路和中转线路订阅生成
-- node-agent 节点侧同步、心跳、任务执行和流量上报
-- relay agent 中转节点 HAProxy 配置下发和 reload
-- 管理后台和用户中心前端页面
-- Docker Compose、Nginx、systemd 部署配置
+中文关键词：Xray 面板、VLESS Reality 面板、VPN 面板、代理面板、梯子面板、机场面板、订阅面板、Clash 订阅、mihomo 订阅、Shadowrocket 订阅、中转节点、流量统计、一键部署节点。
 
-## 技术栈
+English keywords: xray panel, xray-core panel, vless reality panel, vpn panel, proxy panel, subscription panel, clash subscription, mihomo subscription, shadowrocket subscription, relay node, traffic accounting, node-agent, self-hosted proxy.
 
-| 模块 | 技术 |
+## Why RayPilot
+
+- Xray-core and VLESS Reality node management for proxy/VPN subscription services
+- Clash/mihomo, Shadowrocket-compatible, Base64, and plain URI subscription output
+- Direct and relay line generation in one subscription token
+- Multi-group node management for plans and user access control
+- node-agent driven user sync, heartbeat, task execution, and traffic reporting
+- HAProxy TCP relay management with safe config validation and reload
+- One-click exit node and relay node deployment
+- Per-user traffic ledger, daily/weekly/monthly summaries, and quota enforcement
+- Admin console and user portal built with Vue 3 and Element Plus
+- MySQL migrations, Docker Compose, Nginx, and systemd deployment examples
+
+## Tech Stack
+
+| Layer | Stack |
 | --- | --- |
-| 后端 | Go、Gin、GORM、MySQL |
-| 前端 | Vue 3、Vite、Element Plus、Alova、Pinia |
-| 节点 | xray-core、node-agent、HAProxy |
-| 部署 | Docker Compose、Nginx、systemd |
-| 测试 | Go testing、testify、Playwright |
+| Backend | Go, Gin, GORM, MySQL |
+| Frontend | Vue 3, Vite, Element Plus, Alova, Pinia |
+| Proxy Node | Xray-core, VLESS Reality, node-agent |
+| Relay | HAProxy TCP passthrough, node-agent relay mode |
+| Deployment | Docker Compose, Nginx, systemd |
+| Tests | Go testing, testify, Playwright |
 
-## 快速开始
+## Quick Start
 
-复制环境变量并按实际环境修改：
+Copy environment variables and edit them for your environment:
 
 ```bash
 cp .env.example .env
 ```
 
-启动 Compose 服务：
+Start the Compose stack:
 
 ```bash
 make up
 ```
 
-本地分别启动后端和前端：
+Run backend and frontend separately for local development:
 
 ```bash
 make api
 make frontend
 ```
 
-执行数据库迁移：
+Run database migrations:
 
 ```bash
 make migrate
 ```
 
-运行后端测试：
+Run backend tests:
 
 ```bash
 go test ./...
 ```
 
-构建前端：
+Build frontend assets:
 
 ```bash
 cd frontend && npm run build
 ```
 
-## 目录结构
+Build the node-agent image used by one-click deployment:
 
-```text
-cmd/                 后端可执行程序入口
-internal/            后端核心业务代码
-migrations/          SQL 数据库迁移
-frontend/            Vue 3 前端项目
-deploy/              Nginx 和 systemd 部署配置
-web/static/          前端构建产物目录
+```bash
+make node-agent-image
 ```
 
-## 配置说明
+## Repository Layout
 
-项目不会提交本地 `.env`。新环境请从 `.env.example` 复制配置，并务必替换生产环境密钥、数据库密码、JWT secret、节点 token 等敏感信息。
+```text
+cmd/                 Go command entrypoints: api, worker, seed, node-agent
+internal/            Backend handlers, services, repositories, models, platform code
+migrations/          SQL migrations managed by golang-migrate
+frontend/            Vue 3 admin console and user portal
+web/static/          Frontend production build output
+deploy/              Nginx and systemd deployment examples
+文档/                Chinese architecture, API, deployment, operation, and daily notes
+```
 
-## 联系方式
+## GitHub Search Topics
 
-- QQ：270133383
-- 微信：suiyue_creation
+Recommended repository topics for discovery:
 
-## 说明
+```text
+xray
+xray-core
+vless
+reality
+vpn
+proxy
+proxy-panel
+subscription
+subscription-panel
+clash
+mihomo
+shadowrocket
+relay
+node-agent
+traffic-accounting
+self-hosted
+golang
+vue
+```
 
-本仓库当前未声明开源许可证。使用、分发或二次开发前请先联系作者确认授权。
+Recommended GitHub repository description:
+
+```text
+Xray/VLESS Reality VPN & proxy subscription panel with Clash/mihomo subscriptions, relay nodes, traffic accounting, node-agent, and one-click deployment.
+```
+
+## Notes
+
+- The Go module path is currently kept as `suiyue` for compatibility with existing imports and deployments.
+- Local `.env` files, generated binaries, frontend build output, logs, and node modules are intentionally not committed.
+- Production environments must use strong `JWT_SECRET`, database passwords, node tokens, and relay tokens.
+
+## Contact
+
+- QQ: 270133383
+- WeChat: suiyue_creation
+
+## License
+
+This repository has not declared an open-source license yet. Contact the author before using, distributing, or building commercial derivatives.

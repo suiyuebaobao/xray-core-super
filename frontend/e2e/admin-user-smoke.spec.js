@@ -107,7 +107,7 @@ test('admin and user pages render against live API', async ({ page }) => {
   await expect(page.getByText('截止今日').first()).toBeVisible()
 
   const userPages = [
-    ['/', '欢迎使用岁月订阅'],
+    ['/', '欢迎使用 RayPilot'],
     ['/subscription', '我的订阅'],
     ['/orders', '我的订单'],
     ['/plans', '套餐列表'],

@@ -145,7 +145,7 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 	// Step 5: 先创建节点记录（获取 ID 用于容器环境变量）
 	nodeName := req.NodeName
 	if nodeName == "" {
-		nodeName = "suiyue-node-" + req.SSHHost
+		nodeName = "raypilot-node-" + req.SSHHost
 	}
 	hash := sha256.Sum256([]byte(nodeToken))
 	node := &model.Node{
@@ -211,7 +211,7 @@ func (s *NodeDeployService) installDocker(client *ssh.Client) error {
 }
 
 func (s *NodeDeployService) checkContainerRunning(client *ssh.Client) (bool, error) {
-	out, err := client.Exec("docker ps --filter name=suiyue-node-agent --format '{{.Status}}'")
+	out, err := client.Exec("docker ps --format '{{.Names}}\t{{.Status}}' | grep -E '^(raypilot-node-agent|suiyue-node-agent)[[:space:]]'")
 	return err == nil && strings.TrimSpace(out) != "", nil
 }
 
@@ -248,10 +248,10 @@ func (s *NodeDeployService) pushImage(client *ssh.Client) error {
 }
 
 func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string, nodeID uint64, nodeToken string) error {
-	containerName := "suiyue-node-agent"
+	containerName := "raypilot-node-agent"
 
-	// 先停止并删除同名容器（如果存在）
-	client.Exec(fmt.Sprintf("docker rm -f %s 2>/dev/null", containerName))
+	// 先停止并删除同名容器和旧品牌容器（如果存在）
+	client.Exec(fmt.Sprintf("docker rm -f %s suiyue-node-agent 2>/dev/null", containerName))
 
 	cmd := fmt.Sprintf(`docker run -d --name %s \
 		--network host \
@@ -263,7 +263,7 @@ func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string,
 		-e XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json \
 		-e XRAY_API_SERVER=127.0.0.1:10085 \
 		-v /usr/local/etc/xray:/usr/local/etc/xray:rw \
-		suiyue/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), nodeID, shellQuote(nodeToken))
+		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), nodeID, shellQuote(nodeToken))
 
 	out, err := client.Exec(cmd)
 	if err != nil {
@@ -366,7 +366,8 @@ func extractRealityConfig(raw string) (*realityConfig, error) {
 
 func deriveRealityPublicKey(client *ssh.Client, privateKey string) (string, error) {
 	cmd := fmt.Sprintf(
-		"docker exec suiyue-node-agent /usr/local/bin/xray x25519 -i %s 2>/dev/null || xray x25519 -i %s",
+		"docker exec raypilot-node-agent /usr/local/bin/xray x25519 -i %s 2>/dev/null || docker exec suiyue-node-agent /usr/local/bin/xray x25519 -i %s 2>/dev/null || xray x25519 -i %s",
+		shellQuote(privateKey),
 		shellQuote(privateKey),
 		shellQuote(privateKey),
 	)

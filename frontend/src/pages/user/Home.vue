@@ -1,6 +1,6 @@
 <template>
   <div class="home-page" v-loading="loading">
-    <h2>欢迎使用岁月订阅</h2>
+    <h2>欢迎使用 RayPilot</h2>
     <el-row :gutter="20">
       <!-- 用户信息卡片 -->
       <el-col :xs="24" :sm="12" :md="8">

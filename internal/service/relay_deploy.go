@@ -51,7 +51,7 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 	result := &RelayDeployResult{Steps: []Step{}}
 	var sshClient *ssh.Client
 	var createdRelayID uint64
-	containerName := "suiyue-relay-agent"
+	containerName := "raypilot-relay-agent"
 
 	addStep := func(name, status, msg string) {
 		log.Printf("[relay-deploy] [%s] %s: %s", name, status, msg)
@@ -59,7 +59,7 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 	}
 	cleanup := func() {
 		if sshClient != nil {
-			_, _ = sshClient.Exec(fmt.Sprintf("docker rm -f %s 2>/dev/null", shellQuote(containerName)))
+			_, _ = sshClient.Exec(fmt.Sprintf("docker rm -f %s suiyue-relay-agent 2>/dev/null", shellQuote(containerName)))
 		}
 		if createdRelayID > 0 {
 			if delErr := s.relayRepo.Delete(ctx, createdRelayID); delErr != nil {
@@ -132,7 +132,7 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 
 	relayName := strings.TrimSpace(req.RelayName)
 	if relayName == "" {
-		relayName = "suiyue-relay-" + req.SSHHost
+		relayName = "raypilot-relay-" + req.SSHHost
 	}
 	hash := sha256.Sum256([]byte(relayToken))
 	relay := &model.Relay{
@@ -181,9 +181,9 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 }
 
 func startRelayContainer(client *ssh.Client, centerURL string, relayID uint64, relayToken string) error {
-	containerName := "suiyue-relay-agent"
-	_, _ = client.Exec(fmt.Sprintf("docker rm -f %s 2>/dev/null", shellQuote(containerName)))
-	if _, err := client.Exec("mkdir -p /etc/suiyue/haproxy"); err != nil {
+	containerName := "raypilot-relay-agent"
+	_, _ = client.Exec(fmt.Sprintf("docker rm -f %s suiyue-relay-agent 2>/dev/null", shellQuote(containerName)))
+	if _, err := client.Exec("mkdir -p /etc/raypilot/haproxy"); err != nil {
 		return fmt.Errorf("prepare haproxy config dir: %w", err)
 	}
 
@@ -197,8 +197,8 @@ func startRelayContainer(client *ssh.Client, centerURL string, relayID uint64, r
 		-e HAPROXY_CONFIG_PATH=/etc/haproxy/haproxy.cfg \
 		-e HAPROXY_PID_PATH=/tmp/haproxy.pid \
 		-e HAPROXY_STATS_SOCKET_PATH=/tmp/haproxy.sock \
-		-v /etc/suiyue/haproxy:/etc/haproxy:rw \
-		suiyue/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), relayID, shellQuote(relayToken))
+		-v /etc/raypilot/haproxy:/etc/haproxy:rw \
+		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), relayID, shellQuote(relayToken))
 
 	out, err := client.Exec(cmd)
 	if err != nil {

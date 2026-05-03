@@ -121,7 +121,7 @@
           <el-input v-model="deployForm.ssh_password" type="password" show-password />
         </el-form-item>
         <el-form-item label="节点名称" prop="node_name">
-          <el-input v-model="deployForm.node_name" placeholder="可选，默认为 suiyue-node-IP" />
+          <el-input v-model="deployForm.node_name" placeholder="可选，默认为 raypilot-node-IP" />
         </el-form-item>
         <el-form-item label="中心服务地址" prop="center_url">
           <el-input v-model="deployForm.center_url" placeholder="例如：http://156.238.231.216" />

@@ -2,7 +2,7 @@
   <el-container class="user-layout">
     <el-header class="header">
       <div class="header-left">
-        <router-link to="/" class="logo">岁月订阅</router-link>
+        <router-link to="/" class="logo">RayPilot</router-link>
       </div>
       <div class="header-right">
         <router-link to="/">首页</router-link>

@@ -2,6 +2,7 @@
 
 ## 2026-05-03
 
+- README 联系方式增加 Telegram 群链接，方便 GitHub 访客加入交流群或联系作者。
 - 增加 README 展示截图、可复现的脱敏截图脚本、GitHub Actions CI、Dependabot、Issue 模板、PR 模板、贡献指南和安全策略，提升 GitHub 公开项目转化与协作质量。
 - 项目公开品牌改为 RayPilot，README 增加 GitHub SEO 副标题、功能关键词、VPN/代理/梯子/机场面板搜索词和 topics 建议。
 - 前端页面标题、用户侧和管理后台品牌文案改为 RayPilot。

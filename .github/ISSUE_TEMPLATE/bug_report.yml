@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a reproducible RayPilot bug.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a RayPilot issue. Please include enough detail for maintainers to reproduce it.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Commit SHA, tag, or deployment date.
+      placeholder: "main@abcdef0"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Admin console
+        - User portal
+        - Subscription output
+        - Exit node agent
+        - Relay node agent
+        - Traffic accounting
+        - Deployment
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use a clean numbered list.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Remove subscription tokens, node tokens, private keys, server passwords, and customer data before posting.
+      render: shell

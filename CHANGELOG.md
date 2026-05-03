@@ -2,6 +2,7 @@
 
 ## 2026-05-03
 
+- 增加 README 展示截图、可复现的脱敏截图脚本、GitHub Actions CI、Dependabot、Issue 模板、PR 模板、贡献指南和安全策略，提升 GitHub 公开项目转化与协作质量。
 - 项目公开品牌改为 RayPilot，README 增加 GitHub SEO 副标题、功能关键词、VPN/代理/梯子/机场面板搜索词和 topics 建议。
 - 前端页面标题、用户侧和管理后台品牌文案改为 RayPilot。
 - 一键部署使用的 node-agent 镜像名、默认容器名和默认节点名改为 RayPilot 命名，并保留旧容器名清理/兼容逻辑。

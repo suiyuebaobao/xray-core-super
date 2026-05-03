@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a RayPilot feature or product improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or limitation should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior, UI, API, or deployment flow you expect.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Admin console
+        - User portal
+        - Subscription output
+        - Exit node agent
+        - Relay node agent
+        - Traffic accounting
+        - Deployment
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Include tradeoffs or related projects if useful.

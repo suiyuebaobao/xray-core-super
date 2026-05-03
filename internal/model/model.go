@@ -223,27 +223,32 @@ type BindNodeGroupNodesRequest struct {
 
 // Node 节点模型。
 type Node struct {
-	ID              uint64     `gorm:"primaryKey;column:id" json:"id"`
-	Name            string     `gorm:"column:name;type:varchar(128)" json:"name"`
-	Protocol        string     `gorm:"column:protocol;type:varchar(32);default:vless" json:"protocol"`
-	Host            string     `gorm:"column:host;type:varchar(255)" json:"host"`
-	Port            uint32     `gorm:"column:port;default:443" json:"port"`
-	ServerName      string     `gorm:"column:server_name;type:varchar(255)" json:"server_name"`
-	PublicKey       string     `gorm:"column:public_key;type:varchar(255)" json:"public_key"`
-	ShortID         string     `gorm:"column:short_id;type:varchar(32)" json:"short_id"`
-	Fingerprint     string     `gorm:"column:fingerprint;type:varchar(32);default:chrome" json:"fingerprint"`
-	Flow            string     `gorm:"column:flow;type:varchar(32);default:xtls-rprx-vision" json:"flow"`
-	LineMode        string     `gorm:"column:line_mode;type:varchar(32);default:direct_and_relay" json:"line_mode"`
-	NodeGroupID     *uint64    `gorm:"column:node_group_id;index" json:"node_group_id"`
-	AgentBaseURL    string     `gorm:"column:agent_base_url;type:varchar(255)" json:"agent_base_url"`
-	AgentToken      string     `gorm:"-" json:"-"`
-	AgentTokenHash  string     `gorm:"column:agent_token_hash;type:varchar(255)" json:"-"`
-	AgentVersion    *string    `gorm:"column:agent_version;type:varchar(32)" json:"agent_version,omitempty"`
-	LastHeartbeatAt *time.Time `gorm:"column:last_heartbeat_at" json:"last_heartbeat_at,omitempty"`
-	IsEnabled       bool       `gorm:"column:is_enabled;default:true;index" json:"is_enabled"`
-	SortWeight      int        `gorm:"column:sort_weight;default:0" json:"sort_weight"`
-	CreatedAt       time.Time  `gorm:"column:created_at;autoCreateTime" json:"created_at"`
-	UpdatedAt       time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+	ID                   uint64     `gorm:"primaryKey;column:id" json:"id"`
+	Name                 string     `gorm:"column:name;type:varchar(128)" json:"name"`
+	Protocol             string     `gorm:"column:protocol;type:varchar(32);default:vless" json:"protocol"`
+	Host                 string     `gorm:"column:host;type:varchar(255)" json:"host"`
+	Port                 uint32     `gorm:"column:port;default:443" json:"port"`
+	ServerName           string     `gorm:"column:server_name;type:varchar(255)" json:"server_name"`
+	PublicKey            string     `gorm:"column:public_key;type:varchar(255)" json:"public_key"`
+	ShortID              string     `gorm:"column:short_id;type:varchar(32)" json:"short_id"`
+	Fingerprint          string     `gorm:"column:fingerprint;type:varchar(32);default:chrome" json:"fingerprint"`
+	Flow                 string     `gorm:"column:flow;type:varchar(32);default:xtls-rprx-vision" json:"flow"`
+	LineMode             string     `gorm:"column:line_mode;type:varchar(32);default:direct_and_relay" json:"line_mode"`
+	NodeGroupID          *uint64    `gorm:"column:node_group_id;index" json:"node_group_id"`
+	AgentBaseURL         string     `gorm:"column:agent_base_url;type:varchar(255)" json:"agent_base_url"`
+	AgentToken           string     `gorm:"-" json:"-"`
+	AgentTokenHash       string     `gorm:"column:agent_token_hash;type:varchar(255)" json:"-"`
+	AgentVersion         *string    `gorm:"column:agent_version;type:varchar(32)" json:"agent_version,omitempty"`
+	LastHeartbeatAt      *time.Time `gorm:"column:last_heartbeat_at" json:"last_heartbeat_at,omitempty"`
+	LastTrafficReportAt  *time.Time `gorm:"column:last_traffic_report_at" json:"last_traffic_report_at,omitempty"`
+	LastTrafficSuccessAt *time.Time `gorm:"column:last_traffic_success_at" json:"last_traffic_success_at,omitempty"`
+	LastTrafficErrorAt   *time.Time `gorm:"column:last_traffic_error_at" json:"last_traffic_error_at,omitempty"`
+	TrafficErrorCount    uint32     `gorm:"column:traffic_error_count" json:"traffic_error_count"`
+	LastTrafficError     *string    `gorm:"column:last_traffic_error;type:text" json:"last_traffic_error,omitempty"`
+	IsEnabled            bool       `gorm:"column:is_enabled;default:true;index" json:"is_enabled"`
+	SortWeight           int        `gorm:"column:sort_weight;default:0" json:"sort_weight"`
+	CreatedAt            time.Time  `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	UpdatedAt            time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
 }
 
 // TableName 指定表名。

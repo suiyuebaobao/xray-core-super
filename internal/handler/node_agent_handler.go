@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"time"
 
 	"suiyue/internal/model"
 	"suiyue/internal/platform/response"
@@ -146,10 +147,12 @@ func (h *AgentHandler) TaskResult(c *gin.Context) {
 // TrafficReport 处理 POST /api/agent/traffic — 流量数据上报。
 func (h *AgentHandler) TrafficReport(c *gin.Context) {
 	var req struct {
-		NodeID uint64                `json:"node_id" binding:"required"`
-		Token  string                `json:"token" binding:"required"`
-		Items  []service.TrafficItem `json:"items" binding:"required"`
+		NodeID      uint64                `json:"node_id" binding:"required"`
+		Token       string                `json:"token" binding:"required"`
+		CollectedAt *time.Time            `json:"collected_at"`
+		Items       []service.TrafficItem `json:"items" binding:"required"`
 	}
+	receivedAt := time.Now()
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.HandleError(c, response.ErrBadRequest)
 		return
@@ -162,7 +165,23 @@ func (h *AgentHandler) TrafficReport(c *gin.Context) {
 		return
 	}
 
-	if err := h.trafficSvc.ProcessTrafficReport(c.Request.Context(), req.NodeID, req.Items); err != nil {
+	opts := service.TrafficReportOptions{}
+	if req.CollectedAt != nil {
+		opts.CollectedAt = *req.CollectedAt
+	}
+	if err := h.trafficSvc.ProcessTrafficReportWithOptions(c.Request.Context(), req.NodeID, req.Items, opts); err != nil {
+		if markErr := h.nodeRepo.MarkTrafficReportFailure(c.Request.Context(), req.NodeID, err.Error(), receivedAt); markErr != nil {
+			// 状态字段只用于观测，不能覆盖主错误。
+			_ = markErr
+		}
+		response.HandleError(c, response.ErrInternalServer)
+		return
+	}
+	successAt := receivedAt
+	if !opts.CollectedAt.IsZero() {
+		successAt = opts.CollectedAt
+	}
+	if err := h.nodeRepo.MarkTrafficReportSuccess(c.Request.Context(), req.NodeID, receivedAt, successAt); err != nil {
 		response.HandleError(c, response.ErrInternalServer)
 		return
 	}

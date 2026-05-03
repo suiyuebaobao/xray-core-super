@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"suiyue/internal/config"
 	"suiyue/internal/handler"
@@ -33,7 +34,7 @@ func agentTokenHash(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func setupAgentTest(t *testing.T) (*gin.Engine, *config.Config) {
+func setupAgentTest(t *testing.T) (*gin.Engine, *config.Config, *gorm.DB) {
 	t.Helper()
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -80,6 +81,7 @@ func setupAgentTest(t *testing.T) (*gin.Engine, *config.Config) {
 
 	// 创建测试节点
 	db.Create(&model.Node{
+		ID:             1,
 		Name:           "test-node",
 		Protocol:       "vless",
 		Host:           "test.local",
@@ -93,7 +95,7 @@ func setupAgentTest(t *testing.T) (*gin.Engine, *config.Config) {
 	r.POST("/api/agent/task-result", agentHandler.TaskResult)
 	r.POST("/api/agent/traffic", agentHandler.TrafficReport)
 
-	return r, cfg
+	return r, cfg, db
 }
 
 // TestAgentHandler_Heartbeat 测试心跳接口。
@@ -189,11 +191,28 @@ func TestAgentHandler_TaskResult(t *testing.T) {
 
 // TestAgentHandler_TrafficReport 测试流量上报。
 func TestAgentHandler_TrafficReport(t *testing.T) {
-	r, _ := setupAgentTest(t)
+	r, _, db := setupAgentTest(t)
+
+	user := &model.User{
+		UUID:        "traffic-user-uuid",
+		Username:    "traffic-user",
+		XrayUserKey: "testuser@test.local",
+		Status:      "active",
+	}
+	require.NoError(t, db.Create(user).Error)
+	plan := &model.Plan{Name: "traffic plan", Price: 1, TrafficLimit: 100000, DurationDays: 30, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	sub := &model.UserSubscription{
+		UserID: user.ID, PlanID: plan.ID, StartDate: time.Now().Add(-time.Hour),
+		ExpireDate: time.Now().Add(24 * time.Hour), TrafficLimit: plan.TrafficLimit, Status: "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+	collectedAt := time.Now().Add(-5 * time.Minute).UTC().Truncate(time.Second)
 
 	body := map[string]interface{}{
-		"node_id": uint64(1),
-		"token":   "test-node-token",
+		"node_id":      uint64(1),
+		"token":        "test-node-token",
+		"collected_at": collectedAt.Format(time.RFC3339),
 		"items": []map[string]interface{}{
 			{"xray_user_key": "testuser@test.local", "uplink_total": 1000, "downlink_total": 2000},
 		},
@@ -204,13 +223,22 @@ func TestAgentHandler_TrafficReport(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	// 无匹配用户时应正常返回（不报错，跳过）
 	assert.Equal(t, http.StatusOK, w.Code)
+	var node model.Node
+	require.NoError(t, db.First(&node, 1).Error)
+	require.NotNil(t, node.LastTrafficReportAt)
+	require.NotNil(t, node.LastTrafficSuccessAt)
+	assert.True(t, node.LastTrafficSuccessAt.Equal(collectedAt))
+	assert.True(t, node.LastTrafficReportAt.After(collectedAt))
+	assert.Equal(t, uint32(0), node.TrafficErrorCount)
+	var snapshot model.TrafficSnapshot
+	require.NoError(t, db.Where("node_id = ? AND xray_user_key = ?", 1, "testuser@test.local").First(&snapshot).Error)
+	assert.True(t, snapshot.CapturedAt.Equal(collectedAt))
 }
 
 // TestAgentHandler_TrafficReport_InvalidBody 测试无效请求体。
 func TestAgentHandler_TrafficReport_InvalidBody(t *testing.T) {
-	r, _ := setupAgentTest(t)
+	r, _, _ := setupAgentTest(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/agent/traffic", bytes.NewReader([]byte("invalid-json")))
 	req.Header.Set("Content-Type", "application/json")
@@ -356,7 +384,7 @@ func TestAgentHandler_TaskResult_TaskNotFound(t *testing.T) {
 
 // TestAgentHandler_Heartbeat_InvalidBody 测试心跳无效请求体。
 func TestAgentHandler_Heartbeat_InvalidBody(t *testing.T) {
-	r, _ := setupAgentTest(t)
+	r, _, _ := setupAgentTest(t)
 
 	// 缺少 node_id
 	body := map[string]interface{}{"token": "some-token"}
@@ -371,7 +399,7 @@ func TestAgentHandler_Heartbeat_InvalidBody(t *testing.T) {
 
 // TestAgentHandler_Heartbeat_AuthFailure 测试心跳认证失败（节点不存在或 token 不匹配）。
 func TestAgentHandler_Heartbeat_AuthFailure(t *testing.T) {
-	r, _ := setupAgentTest(t)
+	r, _, _ := setupAgentTest(t)
 
 	// 节点 ID 不存在
 	body := map[string]interface{}{"node_id": 999, "token": "wrong-token"}
@@ -523,7 +551,7 @@ func TestAgentHandler_TaskResult_WithLockToken(t *testing.T) {
 
 // TestAgentHandler_TrafficReport_EmptyItems 测试流量上报空 items。
 func TestAgentHandler_TrafficReport_EmptyItems(t *testing.T) {
-	r, _ := setupAgentTest(t)
+	r, _, _ := setupAgentTest(t)
 
 	body := map[string]interface{}{
 		"node_id": uint64(1),
@@ -542,7 +570,7 @@ func TestAgentHandler_TrafficReport_EmptyItems(t *testing.T) {
 
 // TestAgentHandler_TrafficReport_MissingFields 测试流量上报缺少必填字段。
 func TestAgentHandler_TrafficReport_MissingFields(t *testing.T) {
-	r, _ := setupAgentTest(t)
+	r, _, _ := setupAgentTest(t)
 
 	// 缺少 node_id
 	body := map[string]interface{}{

@@ -42,6 +42,17 @@
       <el-table-column prop="last_heartbeat_at" label="最后心跳" width="180">
         <template #default="{ row }">{{ row.last_heartbeat_at ? formatDate(row.last_heartbeat_at) : '-' }}</template>
       </el-table-column>
+      <el-table-column label="流量上报" min-width="220">
+        <template #default="{ row }">
+          <div class="traffic-sync-cell">
+            <div>
+              <el-tag size="small" :type="trafficSyncTag(row)">{{ trafficSyncLabel(row) }}</el-tag>
+              <span class="traffic-sync-time">{{ row.last_traffic_success_at ? formatDate(row.last_traffic_success_at) : '未成功' }}</span>
+            </div>
+            <small v-if="row.last_traffic_error" class="traffic-sync-error">{{ row.last_traffic_error }}</small>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="180">
         <template #default="{ row }">
           <el-button size="small" @click="showEditDialog(row)">编辑</el-button>
@@ -272,6 +283,18 @@ function lineModeLabel(mode) {
   return labels[mode] || '直连 + 中转'
 }
 
+function trafficSyncTag(row) {
+  if (row.last_traffic_error) return 'danger'
+  if (row.last_traffic_success_at) return 'success'
+  return 'info'
+}
+
+function trafficSyncLabel(row) {
+  if (row.last_traffic_error) return `异常 ${row.traffic_error_count || 1} 次`
+  if (row.last_traffic_success_at) return '正常'
+  return '未上报'
+}
+
 function resetForm() {
   form.name = ''
   form.host = ''
@@ -487,5 +510,27 @@ onMounted(() => {
   margin-left: auto;
   color: #909399;
   font-size: 12px;
+}
+.traffic-sync-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.traffic-sync-cell > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.traffic-sync-time {
+  color: #606266;
+  font-size: 12px;
+}
+.traffic-sync-error {
+  color: #f56c6c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

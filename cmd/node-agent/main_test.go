@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildHAProxyConfig_IncludesStatsSocketAndRelayBackend(t *testing.T) {
@@ -145,4 +151,74 @@ func TestXrayStatValueUnmarshal_AcceptsNumberAndString(t *testing.T) {
 	if stringValue != 456 {
 		t.Fatalf("stringValue = %d, want 456", stringValue)
 	}
+}
+
+func TestTrafficQueueFlush_ReplaysOldestFirstAndKeepsFailedBatch(t *testing.T) {
+	var received []TrafficReportReq
+	failFirst := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent/traffic" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var req TrafficReportReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		received = append(received, req)
+		if failFirst {
+			failFirst = false
+			http.Error(w, "temporary failure", http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	queuePath := filepath.Join(t.TempDir(), "traffic_queue.json")
+	agent := NewAgent(&Config{
+		CenterServerURL:   server.URL,
+		NodeID:            7,
+		NodeToken:         "node-token",
+		XrayConfigPath:    filepath.Join(t.TempDir(), "config.json"),
+		TrafficQueuePath:  queuePath,
+		TrafficQueueLimit: 10,
+	})
+
+	firstAt := time.Now().Add(-2 * time.Minute).UTC().Truncate(time.Second)
+	secondAt := firstAt.Add(time.Minute)
+	agent.enqueueTrafficReport(TrafficReportBatch{CollectedAt: firstAt, Items: []TrafficItem{{XrayUserKey: "a@test", UplinkTotal: 1}}})
+	agent.enqueueTrafficReport(TrafficReportBatch{CollectedAt: secondAt, Items: []TrafficItem{{XrayUserKey: "a@test", UplinkTotal: 2}}})
+
+	agent.flushTrafficQueue(contextWithTimeout(t, time.Second))
+	if len(received) != 1 {
+		t.Fatalf("received %d requests, want first failed request only", len(received))
+	}
+	if received[0].CollectedAt != firstAt {
+		t.Fatalf("first collected_at = %s, want %s", received[0].CollectedAt, firstAt)
+	}
+	if len(agent.trafficQueue) != 2 {
+		t.Fatalf("queue len after failed flush = %d, want 2", len(agent.trafficQueue))
+	}
+
+	agent.flushTrafficQueue(contextWithTimeout(t, time.Second))
+	if len(received) != 3 {
+		t.Fatalf("received %d requests, want retry first plus second", len(received))
+	}
+	if received[1].CollectedAt != firstAt || received[2].CollectedAt != secondAt {
+		t.Fatalf("replay order = %s then %s, want %s then %s", received[1].CollectedAt, received[2].CollectedAt, firstAt, secondAt)
+	}
+	if len(agent.trafficQueue) != 0 {
+		t.Fatalf("queue len after successful flush = %d, want 0", len(agent.trafficQueue))
+	}
+	if _, err := os.Stat(queuePath); !os.IsNotExist(err) {
+		t.Fatalf("queue file should be removed, stat err=%v", err)
+	}
+}
+
+func contextWithTimeout(t *testing.T, timeout time.Duration) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	t.Cleanup(cancel)
+	return ctx
 }

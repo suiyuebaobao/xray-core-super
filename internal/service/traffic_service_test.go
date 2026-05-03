@@ -558,3 +558,52 @@ func TestProcessTrafficReport_DuplicateSameSecondSnapshotNotDoubleBilled(t *test
 	require.NoError(t, db.Model(&model.TrafficSnapshot{}).Where("node_id = ?", node.ID).Count(&snapshotCount).Error)
 	assert.Equal(t, int64(3), snapshotCount)
 }
+
+func TestProcessTrafficReport_OutOfOrderCollectedAtSkipped(t *testing.T) {
+	db := setupTrafficOverQuotaDB(t)
+
+	node := &model.Node{
+		Name: "out-of-order-node", Protocol: "vless", Host: "ooo.test",
+		Port: 443, ServerName: "ooo.test", AgentBaseURL: "http://ooo:8080",
+		AgentTokenHash: "hash", IsEnabled: true,
+	}
+	require.NoError(t, db.Create(node).Error)
+
+	plan := &model.Plan{Name: "out-of-order-plan", Price: 10, DurationDays: 30, TrafficLimit: 100000, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	sub := &model.UserSubscription{
+		UserID: 1, PlanID: plan.ID, StartDate: time.Now(),
+		ExpireDate:   time.Now().AddDate(0, 0, 30),
+		TrafficLimit: 100000, UsedTraffic: 0, Status: "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+
+	newerAt := time.Now().UTC().Truncate(time.Second)
+	olderAt := newerAt.Add(-10 * time.Minute)
+	require.NoError(t, db.Create(&model.TrafficSnapshot{
+		NodeID: node.ID, XrayUserKey: "trafficuser@test.local",
+		UplinkTotal: 5000, DownlinkTotal: 7000, CapturedAt: newerAt,
+	}).Error)
+
+	trafficSvc := service.NewTrafficService(db,
+		repository.NewTrafficSnapshotRepository(db),
+		repository.NewUsageLedgerRepository(db),
+		repository.NewSubscriptionRepository(db),
+		repository.NewNodeRepository(db),
+		repository.NewUserRepository(db),
+		nil,
+	)
+
+	err := trafficSvc.ProcessTrafficReportWithOptions(context.Background(), node.ID, []service.TrafficItem{
+		{XrayUserKey: "trafficuser@test.local", UplinkTotal: 3000, DownlinkTotal: 4000},
+	}, service.TrafficReportOptions{CollectedAt: olderAt})
+	require.NoError(t, err)
+
+	var ledgerCount int64
+	require.NoError(t, db.Model(&model.UsageLedger{}).Where("node_id = ?", node.ID).Count(&ledgerCount).Error)
+	assert.Equal(t, int64(0), ledgerCount)
+
+	var snapshotCount int64
+	require.NoError(t, db.Model(&model.TrafficSnapshot{}).Where("node_id = ?", node.ID).Count(&snapshotCount).Error)
+	assert.Equal(t, int64(1), snapshotCount)
+}

@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -67,6 +68,15 @@ func getUint64Env(key string, defaultVal uint64) uint64 {
 	return defaultVal
 }
 
+func getIntEnv(key string, defaultVal int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return defaultVal
+}
+
 // ---- request/response types ----
 
 // Config node-agent 配置。
@@ -86,6 +96,8 @@ type Config struct {
 	HAProxyStatsPath  string        // HAProxy stats socket 路径
 	HeartbeatInterval time.Duration // 心跳间隔
 	ReportInterval    time.Duration // 流量上报间隔
+	TrafficQueuePath  string        // 流量上报失败队列文件
+	TrafficQueueLimit int           // 流量上报失败队列最大长度
 }
 
 const defaultHAProxyStatsSocketPath = "/tmp/haproxy.sock"
@@ -105,6 +117,8 @@ func loadConfig() *Config {
 		HAProxyStatsPath:  getEnv("HAPROXY_STATS_SOCKET_PATH", defaultHAProxyStatsSocketPath),
 		HeartbeatInterval: getDurationEnv("HEARTBEAT_INTERVAL", 10*time.Second),
 		ReportInterval:    getDurationEnv("REPORT_INTERVAL", 60*time.Second),
+		TrafficQueuePath:  getEnv("TRAFFIC_QUEUE_PATH", ""),
+		TrafficQueueLimit: getIntEnv("TRAFFIC_QUEUE_LIMIT", 720),
 	}
 
 	if cfg.CenterServerURL == "" {
@@ -185,9 +199,16 @@ type TrafficItem struct {
 
 // TrafficReportReq 流量上报请求。
 type TrafficReportReq struct {
-	NodeID uint64        `json:"node_id"`
-	Token  string        `json:"token"`
-	Items  []TrafficItem `json:"items"`
+	NodeID      uint64        `json:"node_id"`
+	Token       string        `json:"token"`
+	CollectedAt time.Time     `json:"collected_at"`
+	Items       []TrafficItem `json:"items"`
+}
+
+// TrafficReportBatch 是本地排队的一次流量采集结果。
+type TrafficReportBatch struct {
+	CollectedAt time.Time     `json:"collected_at"`
+	Items       []TrafficItem `json:"items"`
 }
 
 // RelayHeartbeatReq 中转节点心跳请求。
@@ -278,10 +299,13 @@ type VLESSClient struct {
 
 // Agent node-agent 主控制器。
 type Agent struct {
-	cfg        *Config
-	httpClient *http.Client
-	mu         sync.RWMutex
-	traffic    map[string]*TrafficItem // xrayUserKey -> traffic
+	cfg          *Config
+	httpClient   *http.Client
+	mu           sync.RWMutex
+	traffic      map[string]*TrafficItem // xrayUserKey -> traffic
+	queueMu      sync.Mutex
+	trafficQueue []TrafficReportBatch
+	reporting    int32
 }
 
 // NewAgent 创建 agent 实例。
@@ -903,6 +927,7 @@ func (a *Agent) Run() {
 
 	// 加载初始流量快照
 	a.loadTrafficSnapshot()
+	a.loadTrafficQueue()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -923,6 +948,7 @@ func (a *Agent) Run() {
 
 	// 保存当前流量快照
 	a.saveTrafficSnapshot()
+	a.saveTrafficQueue()
 }
 
 // runRelay 启动中转节点模式。relay 模式只管理 HAProxy 转发配置，不读取或修改 Xray 用户。
@@ -1644,19 +1670,89 @@ func (a *Agent) collectAndReportTraffic(ctx context.Context) {
 		return
 	}
 
-	req := TrafficReportReq{
-		NodeID: a.cfg.NodeID,
-		Token:  a.cfg.NodeToken,
-		Items:  items,
-	}
+	a.enqueueTrafficReport(TrafficReportBatch{
+		CollectedAt: time.Now(),
+		Items:       items,
+	})
+	a.flushTrafficQueue(ctx)
+}
 
-	var resp struct{}
-	if err := a.postJSON(ctx, "/api/agent/traffic", req, &resp); err != nil {
-		log.Printf("[agent] traffic report error: %v", err)
+func (a *Agent) trafficQueuePath() string {
+	if a.cfg.TrafficQueuePath != "" {
+		return a.cfg.TrafficQueuePath
+	}
+	return filepath.Join(filepath.Dir(a.cfg.XrayConfigPath), "traffic_queue.json")
+}
+
+func (a *Agent) enqueueTrafficReport(batch TrafficReportBatch) {
+	if batch.CollectedAt.IsZero() {
+		batch.CollectedAt = time.Now()
+	}
+	if len(batch.Items) == 0 {
 		return
 	}
 
-	log.Printf("[agent] traffic reported: %d users", len(items))
+	a.queueMu.Lock()
+	defer a.queueMu.Unlock()
+
+	a.trafficQueue = append(a.trafficQueue, batch)
+	limit := a.cfg.TrafficQueueLimit
+	if limit <= 0 {
+		limit = 720
+	}
+	if len(a.trafficQueue) > limit {
+		drop := len(a.trafficQueue) - limit
+		a.trafficQueue = append([]TrafficReportBatch(nil), a.trafficQueue[drop:]...)
+		log.Printf("[agent] traffic queue exceeded limit, dropped %d oldest batches", drop)
+	}
+	a.saveTrafficQueueLocked()
+}
+
+func (a *Agent) flushTrafficQueue(ctx context.Context) {
+	if !atomic.CompareAndSwapInt32(&a.reporting, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt32(&a.reporting, 0)
+
+	for {
+		a.queueMu.Lock()
+		if len(a.trafficQueue) == 0 {
+			a.queueMu.Unlock()
+			return
+		}
+		batch := a.trafficQueue[0]
+		a.queueMu.Unlock()
+
+		req := TrafficReportReq{
+			NodeID:      a.cfg.NodeID,
+			Token:       a.cfg.NodeToken,
+			CollectedAt: batch.CollectedAt,
+			Items:       batch.Items,
+		}
+
+		var resp struct{}
+		if err := a.postJSON(ctx, "/api/agent/traffic", req, &resp); err != nil {
+			log.Printf("[agent] traffic report error: %v", err)
+			return
+		}
+
+		a.queueMu.Lock()
+		if len(a.trafficQueue) > 0 && trafficReportBatchEqual(a.trafficQueue[0], batch) {
+			a.trafficQueue = append([]TrafficReportBatch(nil), a.trafficQueue[1:]...)
+			a.saveTrafficQueueLocked()
+		}
+		remaining := len(a.trafficQueue)
+		a.queueMu.Unlock()
+
+		log.Printf("[agent] traffic reported: %d users, queued batches remaining: %d", len(batch.Items), remaining)
+	}
+}
+
+func trafficReportBatchEqual(a TrafficReportBatch, b TrafficReportBatch) bool {
+	if !a.CollectedAt.Equal(b.CollectedAt) {
+		return false
+	}
+	return reflect.DeepEqual(a.Items, b.Items)
 }
 
 // relayTrafficCollectLoop 采集中转端口线路级流量。
@@ -1957,6 +2053,60 @@ func (a *Agent) saveTrafficSnapshot() {
 
 	if err := os.WriteFile(snapshotPath, data, 0644); err != nil {
 		log.Printf("[agent] save traffic snapshot error: %v", err)
+	}
+}
+
+func (a *Agent) loadTrafficQueue() {
+	queuePath := a.trafficQueuePath()
+	data, err := os.ReadFile(queuePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[agent] load traffic queue error: %v", err)
+		}
+		return
+	}
+
+	var batches []TrafficReportBatch
+	if err := json.Unmarshal(data, &batches); err != nil {
+		log.Printf("[agent] parse traffic queue error: %v", err)
+		return
+	}
+
+	a.queueMu.Lock()
+	a.trafficQueue = batches
+	a.queueMu.Unlock()
+
+	if len(batches) > 0 {
+		log.Printf("[agent] loaded traffic queue: %d batches", len(batches))
+	}
+}
+
+func (a *Agent) saveTrafficQueue() {
+	a.queueMu.Lock()
+	defer a.queueMu.Unlock()
+	a.saveTrafficQueueLocked()
+}
+
+func (a *Agent) saveTrafficQueueLocked() {
+	queuePath := a.trafficQueuePath()
+	if len(a.trafficQueue) == 0 {
+		if err := os.Remove(queuePath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[agent] remove traffic queue error: %v", err)
+		}
+		return
+	}
+
+	data, err := json.MarshalIndent(a.trafficQueue, "", "  ")
+	if err != nil {
+		log.Printf("[agent] marshal traffic queue error: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(queuePath), 0755); err != nil {
+		log.Printf("[agent] create traffic queue dir error: %v", err)
+		return
+	}
+	if err := os.WriteFile(queuePath, data, 0644); err != nil {
+		log.Printf("[agent] save traffic queue error: %v", err)
 	}
 }
 

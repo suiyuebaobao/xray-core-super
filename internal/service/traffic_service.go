@@ -59,13 +59,28 @@ type TrafficItem struct {
 	DownlinkTotal uint64 `json:"downlink_total"`
 }
 
+// TrafficReportOptions 控制一次流量上报的元信息。
+type TrafficReportOptions struct {
+	CollectedAt time.Time
+}
+
 // ProcessTrafficReport 处理 node-agent 上报的流量数据。
 // 返回处理失败的项数量及第一个错误。
 func (s *TrafficService) ProcessTrafficReport(ctx context.Context, nodeID uint64, items []TrafficItem) error {
+	return s.ProcessTrafficReportWithOptions(ctx, nodeID, items, TrafficReportOptions{})
+}
+
+// ProcessTrafficReportWithOptions 处理 node-agent 上报的流量数据。
+func (s *TrafficService) ProcessTrafficReportWithOptions(ctx context.Context, nodeID uint64, items []TrafficItem, opts TrafficReportOptions) error {
+	capturedAt := opts.CollectedAt
+	if capturedAt.IsZero() {
+		capturedAt = time.Now()
+	}
+
 	var firstErr error
 	failed := 0
 	for _, item := range items {
-		if err := s.processSingleUser(ctx, nodeID, item); err != nil {
+		if err := s.processSingleUser(ctx, nodeID, item, capturedAt); err != nil {
 			failed++
 			if firstErr == nil {
 				firstErr = err
@@ -79,7 +94,7 @@ func (s *TrafficService) ProcessTrafficReport(ctx context.Context, nodeID uint64
 }
 
 // processSingleUser 处理单个用户的流量上报。
-func (s *TrafficService) processSingleUser(ctx context.Context, nodeID uint64, item TrafficItem) error {
+func (s *TrafficService) processSingleUser(ctx context.Context, nodeID uint64, item TrafficItem, capturedAt time.Time) error {
 	// 1. 查找用户
 	user, err := s.userRepo.FindByXrayUserKey(ctx, item.XrayUserKey)
 	if err != nil {
@@ -107,10 +122,13 @@ func (s *TrafficService) processSingleUser(ctx context.Context, nodeID uint64, i
 			XrayUserKey:   item.XrayUserKey,
 			UplinkTotal:   item.UplinkTotal,
 			DownlinkTotal: item.DownlinkTotal,
-			CapturedAt:    time.Now(),
+			CapturedAt:    capturedAt,
 		}); createErr != nil {
 			return fmt.Errorf("create baseline snapshot: %w", createErr)
 		}
+		return nil
+	}
+	if !capturedAt.After(lastSnapshot.CapturedAt) {
 		return nil
 	}
 
@@ -125,7 +143,7 @@ func (s *TrafficService) processSingleUser(ctx context.Context, nodeID uint64, i
 		XrayUserKey:   item.XrayUserKey,
 		UplinkTotal:   item.UplinkTotal,
 		DownlinkTotal: item.DownlinkTotal,
-		CapturedAt:    time.Now(),
+		CapturedAt:    capturedAt,
 	}).Error; err != nil {
 		return fmt.Errorf("create snapshot: %w", err)
 	}
@@ -145,7 +163,7 @@ func (s *TrafficService) processSingleUser(ctx context.Context, nodeID uint64, i
 			DeltaUpload:    deltaUp,
 			DeltaDownload:  deltaDown,
 			DeltaTotal:     deltaTotal,
-			RecordedAt:     time.Now(),
+			RecordedAt:     capturedAt,
 		}).Error; err != nil {
 			return fmt.Errorf("create ledger: %w", err)
 		}

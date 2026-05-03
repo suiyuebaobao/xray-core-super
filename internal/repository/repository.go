@@ -1327,6 +1327,36 @@ func (r *NodeRepository) UpdateHeartbeat(ctx context.Context, nodeID uint64) err
 		Update("last_heartbeat_at", modelNow()).Error
 }
 
+// MarkTrafficReportSuccess 记录节点最近一次成功流量上报。
+func (r *NodeRepository) MarkTrafficReportSuccess(ctx context.Context, nodeID uint64, reportedAt time.Time, successAt time.Time) error {
+	return r.db.WithContext(ctx).
+		Model(&model.Node{}).
+		Where("id = ?", nodeID).
+		Updates(map[string]interface{}{
+			"last_traffic_report_at":  reportedAt,
+			"last_traffic_success_at": gorm.Expr("CASE WHEN last_traffic_success_at IS NULL OR last_traffic_success_at < ? THEN ? ELSE last_traffic_success_at END", successAt, successAt),
+			"last_traffic_error_at":   nil,
+			"traffic_error_count":     0,
+			"last_traffic_error":      nil,
+		}).Error
+}
+
+// MarkTrafficReportFailure 记录节点最近一次流量上报失败。
+func (r *NodeRepository) MarkTrafficReportFailure(ctx context.Context, nodeID uint64, errMsg string, reportedAt time.Time) error {
+	if len(errMsg) > 1000 {
+		errMsg = errMsg[:1000]
+	}
+	return r.db.WithContext(ctx).
+		Model(&model.Node{}).
+		Where("id = ?", nodeID).
+		Updates(map[string]interface{}{
+			"last_traffic_report_at": reportedAt,
+			"last_traffic_error_at":  reportedAt,
+			"traffic_error_count":    gorm.Expr("traffic_error_count + ?", 1),
+			"last_traffic_error":     errMsg,
+		}).Error
+}
+
 // RelayRepository 中转节点数据访问。
 type RelayRepository struct {
 	db *gorm.DB

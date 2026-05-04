@@ -554,6 +554,37 @@ async function installDemoApi(page, persona = 'user') {
     if (pathname === '/api/admin/nodes') {
       return fulfillJson(route, json({ nodes, total: nodes.length }))
     }
+    if (pathname === '/api/admin/nodes/deploy/scan-ips') {
+      return fulfillJson(route, json({
+        ips: [
+          {
+            ip: '203.0.113.10',
+            interface: 'eth0',
+            status: 'usable',
+            is_usable: true,
+            message: '出口 IP 验证通过',
+          },
+          {
+            ip: '203.0.113.11',
+            interface: 'eth0:1',
+            status: 'usable',
+            is_usable: true,
+            message: '出口 IP 验证通过',
+          },
+          {
+            ip: '10.0.0.5',
+            interface: 'eth1',
+            status: 'skipped',
+            is_usable: false,
+            message: '私网地址已跳过',
+          },
+        ],
+        steps: [
+          { name: '读取服务器地址', status: 'success', message: '发现 3 个 IPv4 地址' },
+          { name: '验证公网出口', status: 'success', message: '2 个公网出口 IP 可用' },
+        ],
+      }))
+    }
     if (pathname === '/api/admin/relays') {
       return fulfillJson(route, json({ relays, total: relays.length }))
     }
@@ -652,6 +683,17 @@ async function main() {
       await page.goto(url)
       await screenshot(page, name, { expectedText })
     }
+
+    await page.goto('/admin/nodes')
+    await page.getByRole('button', { name: '一键部署' }).click()
+    await page.getByPlaceholder('例如：154.219.97.219').fill('203.0.113.10')
+    await page.locator('.el-dialog input[type="password"]').fill('demo-password')
+    await page.locator('.el-dialog .el-switch').click()
+    await page.getByRole('button', { name: '扫描出口 IP' }).click()
+    await page.getByText('203.0.113.11').waitFor({ state: 'visible', timeout: 30_000 })
+    await page.locator('.scan-ip-table tbody .el-checkbox').nth(0).click()
+    await page.locator('.scan-ip-table tbody .el-checkbox').nth(1).click()
+    await screenshot(page, 'admin-node-multi-ip-deploy', { expectedText: '2 个公网出口 IP 可用' })
 
     const userContext = await browser.newContext({
       baseURL,

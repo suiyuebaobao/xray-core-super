@@ -34,6 +34,10 @@ English keywords: xray panel, xray-core panel, vless reality panel, vpn panel, p
 | --- | --- |
 | ![Admin dashboard](assets/screenshots/admin-dashboard.png) | ![Exit node management](assets/screenshots/admin-nodes.png) |
 
+| Multi-IP deployment | Node groups |
+| --- | --- |
+| ![Multi-IP node deployment](assets/screenshots/admin-node-multi-ip-deploy.png) | ![Node group management](assets/screenshots/admin-node-groups.png) |
+
 | Plans and groups | Relay nodes |
 | --- | --- |
 | ![Plan management](assets/screenshots/admin-plans.png) | ![Relay management](assets/screenshots/admin-relays.png) |

@@ -1218,6 +1218,51 @@ func normalizeUint64IDs(ids []uint64) ([]uint64, error) {
 	return normalized, nil
 }
 
+// NodeHostRepository 物理节点服务器数据访问。
+type NodeHostRepository struct {
+	db *gorm.DB
+}
+
+// NewNodeHostRepository 创建物理节点服务器 Repository。
+func NewNodeHostRepository(db *gorm.DB) *NodeHostRepository {
+	return &NodeHostRepository{db: db}
+}
+
+// Create 创建物理节点服务器。
+func (r *NodeHostRepository) Create(ctx context.Context, host *model.NodeHost) (*model.NodeHost, error) {
+	err := r.db.WithContext(ctx).Create(host).Error
+	return host, err
+}
+
+// FindByID 根据 ID 查找物理节点服务器。
+func (r *NodeHostRepository) FindByID(ctx context.Context, id uint64) (*model.NodeHost, error) {
+	var host model.NodeHost
+	err := r.db.WithContext(ctx).First(&host, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &host, nil
+}
+
+// UpdateHeartbeat 更新物理节点服务器最后心跳时间。
+func (r *NodeHostRepository) UpdateHeartbeat(ctx context.Context, hostID uint64, version string) error {
+	updates := map[string]interface{}{
+		"last_heartbeat_at": modelNow(),
+	}
+	if version != "" {
+		updates["agent_version"] = version
+	}
+	return r.db.WithContext(ctx).
+		Model(&model.NodeHost{}).
+		Where("id = ?", hostID).
+		Updates(updates).Error
+}
+
+// Delete 删除物理节点服务器。
+func (r *NodeHostRepository) Delete(ctx context.Context, id uint64) error {
+	return r.db.WithContext(ctx).Delete(&model.NodeHost{}, id).Error
+}
+
 // NodeRepository 节点数据访问。
 type NodeRepository struct {
 	db *gorm.DB
@@ -1242,6 +1287,27 @@ func (r *NodeRepository) FindByID(ctx context.Context, id uint64) (*model.Node, 
 		return nil, err
 	}
 	return &node, nil
+}
+
+// FindByNodeHostID 查询同一物理服务器下的逻辑出口节点。
+func (r *NodeRepository) FindByNodeHostID(ctx context.Context, nodeHostID uint64, enabledOnly bool) ([]model.Node, error) {
+	var nodes []model.Node
+	q := r.db.WithContext(ctx).Where("node_host_id = ?", nodeHostID)
+	if enabledOnly {
+		q = q.Where("is_enabled = ?", true)
+	}
+	err := q.Order("sort_weight ASC, id ASC").Find(&nodes).Error
+	return nodes, err
+}
+
+// BelongsToNodeHost 判断逻辑节点是否属于指定物理服务器。
+func (r *NodeRepository) BelongsToNodeHost(ctx context.Context, nodeID uint64, nodeHostID uint64) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&model.Node{}).
+		Where("id = ? AND node_host_id = ?", nodeID, nodeHostID).
+		Count(&count).Error
+	return count > 0, err
 }
 
 // Update 更新节点。

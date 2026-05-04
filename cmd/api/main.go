@@ -52,6 +52,7 @@ func main() {
 	planRepo := repository.NewPlanRepository(db)
 	nodeGroupRepo := repository.NewNodeGroupRepository(db)
 	nodeRepo := repository.NewNodeRepository(db)
+	nodeHostRepo := repository.NewNodeHostRepository(db)
 	taskRepo := repository.NewNodeAccessTaskRepository(db)
 	relayRepo := repository.NewRelayRepository(db)
 	relayBackendRepo := repository.NewRelayBackendRepository(db)
@@ -84,7 +85,7 @@ func main() {
 	)
 
 	// 创建 node-agent 通信处理器
-	agentHandler := handler.NewAgentHandlerWithRelay(nodeAccessSvc, trafficSvc, nodeRepo, relaySvc, relayTrafficSvc, relayRepo)
+	agentHandler := handler.NewAgentHandlerWithRelayAndNodeHosts(nodeAccessSvc, trafficSvc, nodeRepo, nodeHostRepo, relaySvc, relayTrafficSvc, relayRepo)
 
 	// 创建订阅 Token Handler
 	subTokenHandler := handler.NewAdminSubscriptionTokenHandler(
@@ -113,7 +114,7 @@ func main() {
 	adminUserHandler := handler.NewAdminUserHandlerWithSubscription(userRepo, subRepo, tokenRepo, planRepo, nodeAccessSvc, cfg.BCryptRounds, cfg.XrayUserKeyDomain)
 	adminOrderHandler := handler.NewAdminOrderHandler(orderRepo)
 	adminPlanNodeGroupHandler := handler.NewPlanNodeGroupHandlerWithSync(planRepo, subRepo, nodeAccessSvc)
-	nodeDeploySvc := service.NewNodeDeployService(nodeRepo)
+	nodeDeploySvc := service.NewNodeDeployService(nodeRepo, nodeHostRepo)
 	nodeDeployHandler := handler.NewNodeDeployHandler(nodeDeploySvc)
 	relayDeploySvc := service.NewRelayDeployService(relayRepo)
 	relayDeployHandler := handler.NewRelayDeployHandler(relayDeploySvc)
@@ -183,6 +184,9 @@ func main() {
 		agentGroup.POST("/heartbeat", agentHandler.Heartbeat)
 		agentGroup.POST("/task-result", agentHandler.TaskResult)
 		agentGroup.POST("/traffic", agentHandler.TrafficReport)
+		agentGroup.POST("/multi/heartbeat", agentHandler.MultiHeartbeat)
+		agentGroup.POST("/multi/task-result", agentHandler.MultiTaskResult)
+		agentGroup.POST("/multi/traffic", agentHandler.MultiTrafficReport)
 		agentGroup.POST("/relay/heartbeat", agentHandler.RelayHeartbeat)
 		agentGroup.POST("/relay/task-result", agentHandler.RelayTaskResult)
 		agentGroup.POST("/relay/traffic", agentHandler.RelayTrafficReport)
@@ -214,6 +218,7 @@ func main() {
 		adminGroup.POST("/nodes", adminNodeHandler.Create)
 		adminGroup.PUT("/nodes/:id", adminNodeHandler.Update)
 		adminGroup.DELETE("/nodes/:id", adminNodeHandler.Delete)
+		adminGroup.POST("/nodes/deploy/scan-ips", nodeDeployHandler.ScanIPs)
 		adminGroup.POST("/nodes/deploy", nodeDeployHandler.Deploy)
 
 		// 中转节点管理

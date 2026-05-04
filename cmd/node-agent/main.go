@@ -81,10 +81,13 @@ func getIntEnv(key string, defaultVal int) int {
 
 // Config node-agent 配置。
 type Config struct {
-	CenterServerURL   string        // 中心服务 API 地址
-	AgentRole         string        // exit 或 relay
-	NodeID            uint64        // 节点 ID
-	NodeToken         string        // 节点鉴权 Token（明文传输，服务端只保存哈希）
+	CenterServerURL   string // 中心服务 API 地址
+	AgentRole         string // exit 或 relay
+	NodeID            uint64 // 节点 ID
+	NodeToken         string // 节点鉴权 Token（明文传输，服务端只保存哈希）
+	NodeHostID        uint64 // 物理节点服务器 ID（multi_exit 模式）
+	NodeHostToken     string // 物理节点服务器 Token（multi_exit 模式）
+	MultiNodes        []MultiExitNodeConfig
 	RelayID           uint64        // 中转节点 ID
 	RelayToken        string        // 中转节点鉴权 Token
 	XrayConfigPath    string        // xray-core 配置文件路径
@@ -137,6 +140,24 @@ func loadConfig() *Config {
 			log.Fatal("[agent] NODE_TOKEN is required")
 		}
 		cfg.NodeToken = plainToken
+	case "multi_exit":
+		cfg.NodeHostID = getUint64Env("NODE_HOST_ID", 0)
+		if cfg.NodeHostID == 0 {
+			log.Fatal("[agent] NODE_HOST_ID is required")
+		}
+		plainToken := getEnv("NODE_HOST_TOKEN", "")
+		if plainToken == "" {
+			log.Fatal("[agent] NODE_HOST_TOKEN is required")
+		}
+		cfg.NodeHostToken = plainToken
+		nodes, err := loadMultiNodeConfig()
+		if err != nil {
+			log.Fatalf("[agent] load MULTI_NODE_CONFIG failed: %v", err)
+		}
+		if len(nodes) == 0 {
+			log.Fatal("[agent] MULTI_NODE_CONFIG requires at least one node")
+		}
+		cfg.MultiNodes = nodes
 	case "relay":
 		cfg.RelayID = getUint64Env("RELAY_ID", 0)
 		if cfg.RelayID == 0 {
@@ -152,6 +173,79 @@ func loadConfig() *Config {
 	}
 
 	return cfg
+}
+
+func loadMultiNodeConfig() ([]MultiExitNodeConfig, error) {
+	raw := strings.TrimSpace(os.Getenv("MULTI_NODE_CONFIG"))
+	if raw == "" {
+		configPath := strings.TrimSpace(os.Getenv("MULTI_NODE_CONFIG_PATH"))
+		if configPath == "" {
+			return nil, fmt.Errorf("MULTI_NODE_CONFIG or MULTI_NODE_CONFIG_PATH is required")
+		}
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			return nil, fmt.Errorf("read multi node config: %w", err)
+		}
+		raw = string(data)
+	}
+	var nodes []MultiExitNodeConfig
+	if err := json.Unmarshal([]byte(raw), &nodes); err != nil {
+		return nil, fmt.Errorf("parse multi node config: %w", err)
+	}
+	seenIDs := map[uint64]struct{}{}
+	seenIPs := map[string]struct{}{}
+	for i := range nodes {
+		if nodes[i].NodeID == 0 {
+			return nil, fmt.Errorf("node_id is required")
+		}
+		if _, exists := seenIDs[nodes[i].NodeID]; exists {
+			return nil, fmt.Errorf("duplicate node_id: %d", nodes[i].NodeID)
+		}
+		seenIDs[nodes[i].NodeID] = struct{}{}
+		ip := net.ParseIP(strings.TrimSpace(nodes[i].IP))
+		if ip == nil || ip.To4() == nil {
+			return nil, fmt.Errorf("invalid node ip for node %d", nodes[i].NodeID)
+		}
+		nodes[i].IP = ip.To4().String()
+		if _, exists := seenIPs[nodes[i].IP]; exists {
+			return nil, fmt.Errorf("duplicate node ip: %s", nodes[i].IP)
+		}
+		seenIPs[nodes[i].IP] = struct{}{}
+		if nodes[i].Port == 0 {
+			nodes[i].Port = 443
+		}
+		if nodes[i].Port > 65535 {
+			return nil, fmt.Errorf("invalid node port for node %d: %d", nodes[i].NodeID, nodes[i].Port)
+		}
+		if nodes[i].InboundTag == "" {
+			nodes[i].InboundTag = fmt.Sprintf("node_%d_in", nodes[i].NodeID)
+		}
+		if nodes[i].OutboundTag == "" {
+			nodes[i].OutboundTag = fmt.Sprintf("node_%d_out", nodes[i].NodeID)
+		}
+		if nodes[i].XrayUserKeyPrefix == "" {
+			nodes[i].XrayUserKeyPrefix = fmt.Sprintf("node_%d__", nodes[i].NodeID)
+		}
+	}
+	return nodes, nil
+}
+
+// MultiExitNodeConfig 是 multi_exit 模式下一个逻辑出口节点的本地配置。
+type MultiExitNodeConfig struct {
+	NodeID            uint64 `json:"node_id"`
+	IP                string `json:"ip"`
+	Port              uint32 `json:"port"`
+	InboundTag        string `json:"inbound_tag"`
+	OutboundTag       string `json:"outbound_tag"`
+	XrayUserKeyPrefix string `json:"xray_user_key_prefix"`
+}
+
+func (n MultiExitNodeConfig) localXrayUserKey(xrayUserKey string) string {
+	return n.XrayUserKeyPrefix + xrayUserKey
+}
+
+func (n MultiExitNodeConfig) centerXrayUserKey(localKey string) string {
+	return strings.TrimPrefix(localKey, n.XrayUserKeyPrefix)
 }
 
 // HeartbeatReq 心跳请求。
@@ -173,6 +267,7 @@ type HeartbeatData struct {
 
 // AgentTask 从服务端返回的待执行任务。
 type AgentTask struct {
+	NodeID         uint64 `json:"node_id,omitempty"`
 	ID             int64  `json:"id"`
 	Action         string `json:"action"`
 	Payload        string `json:"payload"`
@@ -207,6 +302,39 @@ type TrafficReportReq struct {
 
 // TrafficReportBatch 是本地排队的一次流量采集结果。
 type TrafficReportBatch struct {
+	NodeID      uint64        `json:"node_id,omitempty"`
+	CollectedAt time.Time     `json:"collected_at"`
+	Items       []TrafficItem `json:"items"`
+}
+
+// MultiHeartbeatReq 单 agent 多出口节点心跳请求。
+type MultiHeartbeatReq struct {
+	NodeHostID uint64 `json:"node_host_id"`
+	Version    string `json:"version"`
+	Token      string `json:"token"`
+}
+
+// MultiTaskResultReq 单 agent 多出口节点任务结果上报请求。
+type MultiTaskResultReq struct {
+	NodeHostID uint64 `json:"node_host_id"`
+	NodeID     uint64 `json:"node_id"`
+	Token      string `json:"token"`
+	TaskID     uint64 `json:"task_id"`
+	Success    bool   `json:"success"`
+	Error      string `json:"error,omitempty"`
+	LockToken  string `json:"lock_token"`
+}
+
+// MultiTrafficReportReq 单 agent 多出口节点流量上报请求。
+type MultiTrafficReportReq struct {
+	NodeHostID uint64                   `json:"node_host_id"`
+	Token      string                   `json:"token"`
+	Reports    []MultiTrafficNodeReport `json:"reports"`
+}
+
+// MultiTrafficNodeReport 单个逻辑节点的一次流量上报。
+type MultiTrafficNodeReport struct {
+	NodeID      uint64        `json:"node_id"`
 	CollectedAt time.Time     `json:"collected_at"`
 	Items       []TrafficItem `json:"items"`
 }
@@ -274,6 +402,7 @@ type XrayConfig struct {
 
 // Inbound xray 入站配置。
 type Inbound struct {
+	Tag            string          `json:"tag,omitempty"`
 	Protocol       string          `json:"protocol"`
 	Settings       json.RawMessage `json:"settings"`
 	Port           int             `json:"port"`
@@ -315,6 +444,15 @@ func NewAgent(cfg *Config) *Agent {
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		traffic:    make(map[string]*TrafficItem),
 	}
+}
+
+func (a *Agent) multiNodeByID(nodeID uint64) (MultiExitNodeConfig, bool) {
+	for _, node := range a.cfg.MultiNodes {
+		if node.NodeID == nodeID {
+			return node, true
+		}
+	}
+	return MultiExitNodeConfig{}, false
 }
 
 // isContainerEnv 检测是否在容器环境中。
@@ -624,6 +762,217 @@ func (a *Agent) generateDefaultXrayConfig() error {
 	return os.WriteFile(a.cfg.XrayConfigPath, []byte(config), 0644)
 }
 
+type multiExitReality struct {
+	ServerName string
+	PublicKey  string
+	PrivateKey string
+	ShortID    string
+}
+
+func (a *Agent) ensureMultiExitXrayConfig() error {
+	var rawData []byte
+	if data, err := os.ReadFile(a.cfg.XrayConfigPath); err == nil {
+		rawData = data
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read xray config: %w", err)
+	}
+
+	reality := multiExitReality{ServerName: "www.microsoft.com"}
+	clientsByTag := map[string][]interface{}{}
+	if len(rawData) > 0 {
+		var rawCfg map[string]interface{}
+		if err := json.Unmarshal(rawData, &rawCfg); err != nil {
+			return fmt.Errorf("parse existing xray config: %w", err)
+		}
+		existingReality := extractMultiExitReality(rawCfg)
+		if existingReality.ServerName != "" {
+			reality = existingReality
+		}
+		clientsByTag = extractVLESSClientsByInboundTag(rawCfg)
+	}
+	if reality.PrivateKey == "" || reality.PublicKey == "" {
+		privateKey, publicKey, err := a.generateX25519Keys()
+		if err != nil {
+			return err
+		}
+		reality.PrivateKey = privateKey
+		reality.PublicKey = publicKey
+	}
+	if reality.ServerName == "" {
+		reality.ServerName = "www.microsoft.com"
+	}
+
+	cfg := buildMultiExitXrayConfigMap(a.cfg.MultiNodes, reality, clientsByTag, a.cfg.XrayAPIServer)
+	newData, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal multi_exit xray config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(a.cfg.XrayConfigPath), 0755); err != nil {
+		return fmt.Errorf("create xray config dir: %w", err)
+	}
+	if len(rawData) > 0 && !bytes.Equal(bytes.TrimSpace(rawData), bytes.TrimSpace(newData)) {
+		backupPath := a.cfg.XrayConfigPath + ".bak"
+		if err := os.WriteFile(backupPath, rawData, 0644); err != nil {
+			log.Printf("[agent] backup xray config failed: %v", err)
+		}
+	}
+	if err := os.WriteFile(a.cfg.XrayConfigPath, newData, 0644); err != nil {
+		return fmt.Errorf("write multi_exit xray config: %w", err)
+	}
+	return nil
+}
+
+func (a *Agent) generateX25519Keys() (string, string, error) {
+	keyCmd := exec.Command(a.cfg.XrayBinary, "x25519")
+	keyOut, err := keyCmd.CombinedOutput()
+	if err != nil {
+		return "", "", fmt.Errorf("generate x25519 keys: %w", err)
+	}
+	var privateKey, publicKey string
+	for _, line := range strings.Split(string(keyOut), "\n") {
+		if strings.HasPrefix(line, "PrivateKey: ") {
+			privateKey = strings.TrimSpace(strings.TrimPrefix(line, "PrivateKey: "))
+		}
+		if strings.HasPrefix(line, "Password (PublicKey): ") || strings.HasPrefix(line, "PublicKey: ") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				publicKey = strings.TrimSpace(parts[1])
+			}
+		}
+	}
+	if privateKey == "" || publicKey == "" {
+		return "", "", fmt.Errorf("failed to parse x25519 keys")
+	}
+	return privateKey, publicKey, nil
+}
+
+func extractMultiExitReality(rawCfg map[string]interface{}) multiExitReality {
+	inbounds, _ := rawCfg["inbounds"].([]interface{})
+	for _, inbound := range inbounds {
+		inbMap, ok := inbound.(map[string]interface{})
+		if !ok || inbMap["protocol"] != "vless" {
+			continue
+		}
+		stream, _ := inbMap["streamSettings"].(map[string]interface{})
+		if stream["security"] != "reality" {
+			continue
+		}
+		settings, _ := stream["realitySettings"].(map[string]interface{})
+		rc := multiExitReality{}
+		if names, ok := settings["serverNames"].([]interface{}); ok && len(names) > 0 {
+			rc.ServerName, _ = names[0].(string)
+		}
+		if ids, ok := settings["shortIds"].([]interface{}); ok && len(ids) > 0 {
+			rc.ShortID, _ = ids[0].(string)
+		}
+		rc.PublicKey, _ = settings["publicKey"].(string)
+		rc.PrivateKey, _ = settings["privateKey"].(string)
+		return rc
+	}
+	return multiExitReality{}
+}
+
+func extractVLESSClientsByInboundTag(rawCfg map[string]interface{}) map[string][]interface{} {
+	result := map[string][]interface{}{}
+	inbounds, _ := rawCfg["inbounds"].([]interface{})
+	for _, inbound := range inbounds {
+		inbMap, ok := inbound.(map[string]interface{})
+		if !ok || inbMap["protocol"] != "vless" {
+			continue
+		}
+		tag, _ := inbMap["tag"].(string)
+		if tag == "" {
+			continue
+		}
+		settings, _ := inbMap["settings"].(map[string]interface{})
+		clients, _ := settings["clients"].([]interface{})
+		result[tag] = clients
+	}
+	return result
+}
+
+func buildMultiExitXrayConfigMap(nodes []MultiExitNodeConfig, reality multiExitReality, clientsByTag map[string][]interface{}, apiServer string) map[string]interface{} {
+	listenHost, listenPort, err := parseXrayAPIServer(apiServer)
+	if err != nil {
+		listenHost, listenPort = "127.0.0.1", 10085
+	}
+	inbounds := []interface{}{
+		map[string]interface{}{
+			"tag":      "api",
+			"listen":   listenHost,
+			"port":     listenPort,
+			"protocol": "dokodemo-door",
+			"settings": map[string]interface{}{"address": "127.0.0.1"},
+		},
+	}
+	outbounds := []interface{}{
+		map[string]interface{}{"protocol": "blackhole", "tag": "blocked"},
+	}
+	rules := []interface{}{
+		map[string]interface{}{"type": "field", "inboundTag": []interface{}{"api"}, "outboundTag": "api"},
+		map[string]interface{}{"type": "field", "outboundTag": "blocked", "protocol": []interface{}{"bittorrent"}},
+	}
+
+	for _, node := range nodes {
+		port := node.Port
+		if port == 0 {
+			port = 443
+		}
+		clients := clientsByTag[node.InboundTag]
+		if clients == nil {
+			clients = []interface{}{}
+		}
+		inbounds = append(inbounds, map[string]interface{}{
+			"tag":      node.InboundTag,
+			"listen":   node.IP,
+			"port":     port,
+			"protocol": "vless",
+			"settings": map[string]interface{}{
+				"clients":    clients,
+				"decryption": "none",
+			},
+			"streamSettings": map[string]interface{}{
+				"network":  "tcp",
+				"security": "reality",
+				"realitySettings": map[string]interface{}{
+					"dest":        reality.ServerName + ":443",
+					"serverNames": []interface{}{reality.ServerName},
+					"privateKey":  reality.PrivateKey,
+					"publicKey":   reality.PublicKey,
+					"shortIds":    []interface{}{reality.ShortID},
+				},
+			},
+			"sniffing": map[string]interface{}{
+				"enabled":      true,
+				"destOverride": []interface{}{"http", "tls"},
+			},
+		})
+		outbounds = append(outbounds, map[string]interface{}{
+			"tag":         node.OutboundTag,
+			"protocol":    "freedom",
+			"sendThrough": node.IP,
+		})
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"inboundTag":  []interface{}{node.InboundTag},
+			"outboundTag": node.OutboundTag,
+		})
+	}
+
+	return map[string]interface{}{
+		"log":    map[string]interface{}{"loglevel": "warning"},
+		"api":    map[string]interface{}{"tag": "api", "services": []interface{}{"StatsService"}},
+		"stats":  map[string]interface{}{},
+		"policy": map[string]interface{}{"levels": map[string]interface{}{"0": map[string]interface{}{"statsUserUplink": true, "statsUserDownlink": true}}, "system": map[string]interface{}{"statsInboundUplink": true, "statsInboundDownlink": true, "statsOutboundUplink": true, "statsOutboundDownlink": true}},
+		"routing": map[string]interface{}{
+			"domainStrategy": "AsIs",
+			"rules":          rules,
+		},
+		"inbounds":  inbounds,
+		"outbounds": outbounds,
+	}
+}
+
 func (a *Agent) ensureXrayStatsConfig() error {
 	rawData, err := os.ReadFile(a.cfg.XrayConfigPath)
 	if err != nil {
@@ -911,6 +1260,10 @@ func (a *Agent) Run() {
 		a.runRelay()
 		return
 	}
+	if a.cfg.AgentRole == "multi_exit" {
+		a.runMultiExit()
+		return
+	}
 	log.Printf("[agent] node ID: %d", a.cfg.NodeID)
 	log.Printf("[agent] xray config: %s", a.cfg.XrayConfigPath)
 
@@ -947,6 +1300,44 @@ func (a *Agent) Run() {
 	cancel()
 
 	// 保存当前流量快照
+	a.saveTrafficSnapshot()
+	a.saveTrafficQueue()
+}
+
+// runMultiExit 启动单 agent 多出口节点模式。
+func (a *Agent) runMultiExit() {
+	log.Printf("[agent] node host ID: %d", a.cfg.NodeHostID)
+	log.Printf("[agent] managed nodes: %d", len(a.cfg.MultiNodes))
+	log.Printf("[agent] xray config: %s", a.cfg.XrayConfigPath)
+
+	if err := a.ensureXrayInstalled(); err != nil {
+		log.Fatalf("[agent] xray-core setup failed: %v", err)
+	}
+	if err := a.ensureMultiExitXrayConfig(); err != nil {
+		log.Fatalf("[agent] multi_exit xray config setup failed: %v", err)
+	}
+	if err := a.ensureXrayStatsConfig(); err != nil {
+		log.Fatalf("[agent] xray stats setup failed: %v", err)
+	}
+	if err := a.ensureXrayProcessRunning(); err != nil {
+		log.Fatalf("[agent] xray process setup failed: %v", err)
+	}
+
+	a.loadTrafficSnapshot()
+	a.loadTrafficQueue()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go a.multiHeartbeatLoop(ctx)
+	go a.trafficCollectLoop(ctx)
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("[agent] multi_exit mode shutting down...")
+	cancel()
 	a.saveTrafficSnapshot()
 	a.saveTrafficQueue()
 }
@@ -1275,6 +1666,76 @@ func (a *Agent) doHeartbeat(ctx context.Context) {
 	}
 }
 
+// multiHeartbeatLoop 定时以物理主机身份上报心跳，拉取所有逻辑节点任务。
+func (a *Agent) multiHeartbeatLoop(ctx context.Context) {
+	ticker := time.NewTicker(a.cfg.HeartbeatInterval)
+	defer ticker.Stop()
+
+	a.doMultiHeartbeat(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.doMultiHeartbeat(ctx)
+		}
+	}
+}
+
+func (a *Agent) doMultiHeartbeat(ctx context.Context) {
+	reqBody := MultiHeartbeatReq{
+		NodeHostID: a.cfg.NodeHostID,
+		Version:    "1.0.0",
+		Token:      a.cfg.NodeHostToken,
+	}
+
+	var resp HeartbeatResp
+	if err := a.postJSON(ctx, "/api/agent/multi/heartbeat", reqBody, &resp); err != nil {
+		log.Printf("[agent] multi heartbeat error: %v", err)
+		return
+	}
+	if !resp.Success {
+		log.Printf("[agent] multi heartbeat failed")
+		return
+	}
+	for _, task := range resp.Data.Tasks {
+		a.executeMultiTask(ctx, task)
+	}
+}
+
+func (a *Agent) executeMultiTask(ctx context.Context, task AgentTask) {
+	log.Printf("[agent] executing multi task %d: node_id=%d action=%s", task.ID, task.NodeID, task.Action)
+	var errMsg string
+	switch task.Action {
+	case "UPSERT_USER":
+		errMsg = a.handleMultiUpsertUser(task.NodeID, task.Payload)
+	case "DISABLE_USER":
+		errMsg = a.handleMultiDisableUser(task.NodeID, task.Payload)
+	default:
+		errMsg = fmt.Sprintf("unknown action: %s", task.Action)
+	}
+	success := errMsg == ""
+	resultReq := MultiTaskResultReq{
+		NodeHostID: a.cfg.NodeHostID,
+		NodeID:     task.NodeID,
+		Token:      a.cfg.NodeHostToken,
+		TaskID:     uint64(task.ID),
+		Success:    success,
+		Error:      errMsg,
+		LockToken:  task.LockToken,
+	}
+	var resultResp struct{}
+	if err := a.postJSON(ctx, "/api/agent/multi/task-result", resultReq, &resultResp); err != nil {
+		log.Printf("[agent] report multi task result error: %v", err)
+	}
+	if success {
+		log.Printf("[agent] multi task %d completed successfully", task.ID)
+	} else {
+		log.Printf("[agent] multi task %d failed: %s", task.ID, errMsg)
+	}
+}
+
 // executeTask 执行单个任务。
 func (a *Agent) executeTask(ctx context.Context, task AgentTask) {
 	log.Printf("[agent] executing task %d: action=%s", task.ID, task.Action)
@@ -1344,6 +1805,32 @@ func (a *Agent) handleUpsertUser(payload string) string {
 	return ""
 }
 
+func (a *Agent) handleMultiUpsertUser(nodeID uint64, payload string) string {
+	var p struct {
+		XrayUserKey string `json:"xray_user_key"`
+		UUID        string `json:"uuid"`
+		Flow        string `json:"flow"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return fmt.Sprintf("invalid payload: %v", err)
+	}
+	node, ok := a.multiNodeByID(nodeID)
+	if !ok {
+		return fmt.Sprintf("unknown managed node_id: %d", nodeID)
+	}
+	if p.Flow == "" {
+		p.Flow = "xtls-rprx-vision"
+	}
+	localKey := node.localXrayUserKey(p.XrayUserKey)
+	if err := a.addVLESSClientToInbound(node.InboundTag, p.UUID, localKey, p.Flow); err != nil {
+		return fmt.Sprintf("add vless client failed: %v", err)
+	}
+	a.mu.Lock()
+	a.traffic[localKey] = &TrafficItem{XrayUserKey: localKey}
+	a.mu.Unlock()
+	return ""
+}
+
 // handleDisableUser 处理 DISABLE_USER 任务。
 // payload 格式：{"xray_user_key":"user@domain"}
 func (a *Agent) handleDisableUser(payload string) string {
@@ -1361,8 +1848,29 @@ func (a *Agent) handleDisableUser(payload string) string {
 	return ""
 }
 
+func (a *Agent) handleMultiDisableUser(nodeID uint64, payload string) string {
+	var p struct {
+		XrayUserKey string `json:"xray_user_key"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return fmt.Sprintf("invalid payload: %v", err)
+	}
+	node, ok := a.multiNodeByID(nodeID)
+	if !ok {
+		return fmt.Sprintf("unknown managed node_id: %d", nodeID)
+	}
+	if err := a.removeVLESSClientFromInbound(node.InboundTag, node.localXrayUserKey(p.XrayUserKey)); err != nil {
+		return fmt.Sprintf("remove vless client failed: %v", err)
+	}
+	return ""
+}
+
 // addVLESSClient 向 xray-core 配置文件添加 VLESS 用户。
 func (a *Agent) addVLESSClient(uuid, email, flow string) error {
+	return a.addVLESSClientToInbound("", uuid, email, flow)
+}
+
+func (a *Agent) addVLESSClientToInbound(inboundTag, uuid, email, flow string) error {
 	configPath := a.cfg.XrayConfigPath
 
 	// 读取原始配置（保留完整 JSON，避免丢失其他字段）
@@ -1377,26 +1885,17 @@ func (a *Agent) addVLESSClient(uuid, email, flow string) error {
 		return fmt.Errorf("parse config: %w", err)
 	}
 
-	// 找到 VLESS 入站
 	inboundsRaw, ok := rawCfg["inbounds"].([]interface{})
 	if !ok {
 		return fmt.Errorf("no inbounds found")
 	}
 
-	vlessIdx := -1
-	for i, inbound := range inboundsRaw {
-		inbMap, ok := inbound.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if inbMap["protocol"] == "vless" {
-			vlessIdx = i
-			break
-		}
-	}
-
+	vlessIdx := findVLESSInboundIndex(inboundsRaw, inboundTag)
 	if vlessIdx < 0 {
-		return fmt.Errorf("no vless inbound found")
+		if inboundTag == "" {
+			return fmt.Errorf("no vless inbound found")
+		}
+		return fmt.Errorf("no vless inbound found for tag %s", inboundTag)
 	}
 
 	// 获取 VLESS 入站设置
@@ -1462,6 +1961,10 @@ func (a *Agent) addVLESSClient(uuid, email, flow string) error {
 
 // removeVLESSClient 从 xray-core 配置文件中移除 VLESS 用户。
 func (a *Agent) removeVLESSClient(email string) error {
+	return a.removeVLESSClientFromInbound("", email)
+}
+
+func (a *Agent) removeVLESSClientFromInbound(inboundTag, email string) error {
 	configPath := a.cfg.XrayConfigPath
 
 	rawData, err := os.ReadFile(configPath)
@@ -1479,20 +1982,12 @@ func (a *Agent) removeVLESSClient(email string) error {
 		return fmt.Errorf("no inbounds found")
 	}
 
-	vlessIdx := -1
-	for i, inbound := range inboundsRaw {
-		inbMap, ok := inbound.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if inbMap["protocol"] == "vless" {
-			vlessIdx = i
-			break
-		}
-	}
-
+	vlessIdx := findVLESSInboundIndex(inboundsRaw, inboundTag)
 	if vlessIdx < 0 {
-		return fmt.Errorf("no vless inbound found")
+		if inboundTag == "" {
+			return fmt.Errorf("no vless inbound found")
+		}
+		return fmt.Errorf("no vless inbound found for tag %s", inboundTag)
 	}
 
 	inbMap := inboundsRaw[vlessIdx].(map[string]interface{})
@@ -1547,6 +2042,19 @@ func (a *Agent) removeVLESSClient(email string) error {
 
 	// 重启 xray-core
 	return a.restartXray()
+}
+
+func findVLESSInboundIndex(inboundsRaw []interface{}, inboundTag string) int {
+	for i, inbound := range inboundsRaw {
+		inbMap, ok := inbound.(map[string]interface{})
+		if !ok || inbMap["protocol"] != "vless" {
+			continue
+		}
+		if inboundTag == "" || inbMap["tag"] == inboundTag {
+			return i
+		}
+	}
+	return -1
 }
 
 // restartXray 重启 xray-core。
@@ -1617,6 +2125,11 @@ func (a *Agent) trafficCollectLoop(ctx context.Context) {
 
 // collectAndReportTraffic 采集并上报流量。
 func (a *Agent) collectAndReportTraffic(ctx context.Context) {
+	if a.cfg.AgentRole == "multi_exit" {
+		a.collectAndReportMultiTraffic(ctx)
+		return
+	}
+
 	// 从 xray-core 配置文件获取当前用户列表
 	clients := a.getVLESSClients()
 	if len(clients) == 0 {
@@ -1677,6 +2190,71 @@ func (a *Agent) collectAndReportTraffic(ctx context.Context) {
 	a.flushTrafficQueue(ctx)
 }
 
+func (a *Agent) collectAndReportMultiTraffic(ctx context.Context) {
+	stats, err := a.queryXrayStats(ctx)
+	if err != nil {
+		log.Printf("[agent] query xray stats failed: %v", err)
+		return
+	}
+
+	clientsByTag := a.getVLESSClientsByInboundTag()
+	enqueued := 0
+
+	a.mu.Lock()
+	for _, node := range a.cfg.MultiNodes {
+		clients := clientsByTag[node.InboundTag]
+		if len(clients) == 0 {
+			continue
+		}
+		found := make(map[string]struct{}, len(clients))
+		items := make([]TrafficItem, 0, len(clients))
+		for _, client := range clients {
+			found[client.Email] = struct{}{}
+			stat := stats[client.Email]
+			if existing, ok := a.traffic[client.Email]; ok {
+				existing.UplinkTotal = stat.UplinkTotal
+				existing.DownlinkTotal = stat.DownlinkTotal
+				itemCopy := *existing
+				itemCopy.XrayUserKey = node.centerXrayUserKey(client.Email)
+				items = append(items, itemCopy)
+			} else {
+				a.traffic[client.Email] = &TrafficItem{
+					XrayUserKey:   client.Email,
+					UplinkTotal:   stat.UplinkTotal,
+					DownlinkTotal: stat.DownlinkTotal,
+				}
+				itemCopy := *a.traffic[client.Email]
+				itemCopy.XrayUserKey = node.centerXrayUserKey(client.Email)
+				items = append(items, itemCopy)
+			}
+		}
+		for key, item := range a.traffic {
+			if !strings.HasPrefix(key, node.XrayUserKeyPrefix) {
+				continue
+			}
+			if _, ok := found[key]; ok {
+				continue
+			}
+			itemCopy := *item
+			itemCopy.XrayUserKey = node.centerXrayUserKey(key)
+			items = append(items, itemCopy)
+		}
+		if len(items) > 0 {
+			a.enqueueTrafficReport(TrafficReportBatch{
+				NodeID:      node.NodeID,
+				CollectedAt: time.Now(),
+				Items:       items,
+			})
+			enqueued++
+		}
+	}
+	a.mu.Unlock()
+
+	if enqueued > 0 {
+		a.flushTrafficQueue(ctx)
+	}
+}
+
 func (a *Agent) trafficQueuePath() string {
 	if a.cfg.TrafficQueuePath != "" {
 		return a.cfg.TrafficQueuePath
@@ -1723,15 +2301,37 @@ func (a *Agent) flushTrafficQueue(ctx context.Context) {
 		batch := a.trafficQueue[0]
 		a.queueMu.Unlock()
 
-		req := TrafficReportReq{
-			NodeID:      a.cfg.NodeID,
-			Token:       a.cfg.NodeToken,
-			CollectedAt: batch.CollectedAt,
-			Items:       batch.Items,
+		var err error
+		if a.cfg.AgentRole == "multi_exit" {
+			nodeID := batch.NodeID
+			if nodeID == 0 {
+				log.Printf("[agent] drop invalid multi traffic batch without node_id")
+				err = nil
+			} else {
+				req := MultiTrafficReportReq{
+					NodeHostID: a.cfg.NodeHostID,
+					Token:      a.cfg.NodeHostToken,
+					Reports: []MultiTrafficNodeReport{{
+						NodeID:      nodeID,
+						CollectedAt: batch.CollectedAt,
+						Items:       batch.Items,
+					}},
+				}
+				var resp struct{}
+				err = a.postJSON(ctx, "/api/agent/multi/traffic", req, &resp)
+			}
+		} else {
+			req := TrafficReportReq{
+				NodeID:      a.cfg.NodeID,
+				Token:       a.cfg.NodeToken,
+				CollectedAt: batch.CollectedAt,
+				Items:       batch.Items,
+			}
+			var resp struct{}
+			err = a.postJSON(ctx, "/api/agent/traffic", req, &resp)
 		}
 
-		var resp struct{}
-		if err := a.postJSON(ctx, "/api/agent/traffic", req, &resp); err != nil {
+		if err != nil {
 			log.Printf("[agent] traffic report error: %v", err)
 			return
 		}
@@ -1749,6 +2349,9 @@ func (a *Agent) flushTrafficQueue(ctx context.Context) {
 }
 
 func trafficReportBatchEqual(a TrafficReportBatch, b TrafficReportBatch) bool {
+	if a.NodeID != b.NodeID {
+		return false
+	}
 	if !a.CollectedAt.Equal(b.CollectedAt) {
 		return false
 	}
@@ -1969,6 +2572,15 @@ type VLESSClientInfo struct {
 
 // getVLESSClients 从 xray 配置文件读取当前 VLESS 用户列表。
 func (a *Agent) getVLESSClients() []VLESSClientInfo {
+	clientsByTag := a.getVLESSClientsByInboundTag()
+	var clients []VLESSClientInfo
+	for _, list := range clientsByTag {
+		clients = append(clients, list...)
+	}
+	return clients
+}
+
+func (a *Agent) getVLESSClientsByInboundTag() map[string][]VLESSClientInfo {
 	data, err := os.ReadFile(a.cfg.XrayConfigPath)
 	if err != nil {
 		log.Printf("[agent] read xray config failed: %v", err)
@@ -1981,7 +2593,7 @@ func (a *Agent) getVLESSClients() []VLESSClientInfo {
 		return nil
 	}
 
-	var clients []VLESSClientInfo
+	clientsByTag := make(map[string][]VLESSClientInfo)
 	for _, inbound := range xrayCfg.Inbounds {
 		if inbound.Protocol == "vless" {
 			var settings VLESSSettings
@@ -1990,7 +2602,7 @@ func (a *Agent) getVLESSClients() []VLESSClientInfo {
 			}
 			for _, c := range settings.Clients {
 				if c.Email != "" {
-					clients = append(clients, VLESSClientInfo{
+					clientsByTag[inbound.Tag] = append(clientsByTag[inbound.Tag], VLESSClientInfo{
 						Email: c.Email,
 					})
 				}
@@ -1998,7 +2610,7 @@ func (a *Agent) getVLESSClients() []VLESSClientInfo {
 		}
 	}
 
-	return clients
+	return clientsByTag
 }
 
 // loadTrafficSnapshot 从文件加载流量快照。

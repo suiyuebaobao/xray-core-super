@@ -105,9 +105,9 @@
     </el-dialog>
 
     <!-- 一键部署弹窗 -->
-    <el-dialog v-model="deployDialogVisible" title="一键部署节点" width="500px">
+    <el-dialog v-model="deployDialogVisible" title="一键部署节点" width="760px">
       <el-form :model="deployForm" :rules="deployRules" ref="deployFormRef" label-width="120px">
-        <el-alert title="部署成功后会自动创建节点记录并刷新列表" type="info" :closable="false" style="margin-bottom: 16px" />
+        <el-alert :title="deployForm.multi_ip_enabled ? '多 IP 模式会先扫描出口 IP，勾选确认后才会创建多个逻辑节点' : '部署成功后会自动创建节点记录并刷新列表'" type="info" :closable="false" style="margin-bottom: 16px" />
         <el-form-item label="服务器 IP" prop="ssh_host">
           <el-input v-model="deployForm.ssh_host" placeholder="例如：154.219.97.219" />
         </el-form-item>
@@ -129,6 +129,41 @@
         <el-form-item label="节点 Token">
           <el-input v-model="deployForm.node_token" placeholder="留空自动生成" />
         </el-form-item>
+        <el-form-item label="多 IP 服务器">
+          <el-switch
+            v-model="deployForm.multi_ip_enabled"
+            active-text="是"
+            inactive-text="否"
+            @change="handleMultiIpModeChange"
+          />
+        </el-form-item>
+        <template v-if="deployForm.multi_ip_enabled">
+          <el-form-item label="出口 IP 扫描">
+            <el-button type="primary" plain :loading="scanningIps" @click="handleScanDeployIps">扫描出口 IP</el-button>
+            <span class="scan-hint">扫描后手动勾选要创建为节点的公网出口 IP</span>
+          </el-form-item>
+          <el-table
+            v-if="scannedIps.length"
+            ref="scanIpsTableRef"
+            :data="scannedIps"
+            border
+            size="small"
+            class="scan-ip-table"
+            @selection-change="handleScanIpSelectionChange"
+          >
+            <el-table-column type="selection" width="48" :selectable="isScannedIpSelectable" />
+            <el-table-column prop="ip" label="IP" min-width="150" />
+            <el-table-column prop="interface" label="网卡" width="110" />
+            <el-table-column label="状态" width="120">
+              <template #default="{ row }">
+                <el-tag :type="row.is_usable ? 'success' : row.status === 'skipped' ? 'info' : 'danger'">
+                  {{ row.is_usable ? '可用' : row.status === 'skipped' ? '跳过' : '不可用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="message" label="说明" min-width="220" />
+          </el-table>
+        </template>
       </el-form>
 
       <!-- 部署进度 -->
@@ -206,6 +241,10 @@ const deployDialogVisible = ref(false)
 const deploying = ref(false)
 const deployFormRef = ref(null)
 const deploySteps = ref([])
+const scannedIps = ref([])
+const selectedDeployIps = ref([])
+const scanningIps = ref(false)
+const scanIpsTableRef = ref(null)
 
 const deployForm = reactive({
   ssh_host: '',
@@ -215,6 +254,7 @@ const deployForm = reactive({
   node_name: '',
   center_url: window.location.origin,
   node_token: '',
+  multi_ip_enabled: false,
 })
 
 const deployRules = {
@@ -226,7 +266,52 @@ const deployRules = {
 
 function showDeployDialog() {
   deploySteps.value = []
+  scannedIps.value = []
+  selectedDeployIps.value = []
   deployDialogVisible.value = true
+}
+
+function handleMultiIpModeChange() {
+  scannedIps.value = []
+  selectedDeployIps.value = []
+  scanIpsTableRef.value?.clearSelection()
+}
+
+function isScannedIpSelectable(row) {
+  return !!row.is_usable
+}
+
+function handleScanIpSelectionChange(selection) {
+  selectedDeployIps.value = selection
+}
+
+async function handleScanDeployIps() {
+  const valid = await deployFormRef.value.validate().catch(() => false)
+  if (!valid) return
+
+  scanningIps.value = true
+  scannedIps.value = []
+  selectedDeployIps.value = []
+  try {
+    const res = await adminApi.nodes.scanDeployIps({
+      ssh_host: deployForm.ssh_host,
+      ssh_port: deployForm.ssh_port,
+      ssh_user: deployForm.ssh_user,
+      ssh_password: deployForm.ssh_password,
+    })
+    scannedIps.value = res.data.ips || []
+    deploySteps.value = res.data.steps || []
+    const usableCount = scannedIps.value.filter((item) => item.is_usable).length
+    if (usableCount) {
+      ElMessage.success(`扫描完成，发现 ${usableCount} 个可用出口 IP`)
+    } else {
+      ElMessage.warning('扫描完成，未发现可用公网出口 IP')
+    }
+  } catch (err) {
+    ElMessage.error(err.message || '出口 IP 扫描失败')
+  } finally {
+    scanningIps.value = false
+  }
 }
 
 async function handleDeploy() {
@@ -237,6 +322,10 @@ async function handleDeploy() {
   deploySteps.value = []
 
   try {
+    if (deployForm.multi_ip_enabled && selectedDeployIps.value.length === 0) {
+      ElMessage.warning('请先扫描并勾选要部署的出口 IP')
+      return
+    }
     const payload = {
       ssh_host: deployForm.ssh_host,
       ssh_port: deployForm.ssh_port,
@@ -245,15 +334,19 @@ async function handleDeploy() {
       node_name: deployForm.node_name,
       center_url: deployForm.center_url,
       node_token: deployForm.node_token,
+      multi_ip_enabled: deployForm.multi_ip_enabled,
+      selected_ips: selectedDeployIps.value.map((item) => item.ip),
     }
 
     const res = await adminApi.nodes.deploy(payload)
     deploySteps.value = res.data.steps || []
 
     if (res.data.success) {
-      ElMessage.success(`部署成功！节点 ID: ${res.data.node_id}`)
-      if (res.data.node_token) {
-        await ElMessageBox.alert(`节点 Token 已自动生成：${res.data.node_token}`, '部署成功', {
+      const ids = res.data.node_ids?.length ? res.data.node_ids.join(', ') : res.data.node_id
+      ElMessage.success(`部署成功！节点 ID: ${ids}`)
+      const generatedToken = res.data.node_host_token || res.data.node_token
+      if (generatedToken) {
+        await ElMessageBox.alert(`节点 Token 已自动生成：${generatedToken}`, '部署成功', {
           confirmButtonText: '知道了',
         })
       }
@@ -510,6 +603,15 @@ onMounted(() => {
   margin-left: auto;
   color: #909399;
   font-size: 12px;
+}
+.scan-hint {
+  margin-left: 10px;
+  color: #909399;
+  font-size: 12px;
+}
+.scan-ip-table {
+  margin: 0 0 16px 120px;
+  width: calc(100% - 120px);
 }
 .traffic-sync-cell {
   display: flex;

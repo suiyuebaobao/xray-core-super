@@ -1,0 +1,343 @@
+openapi: 3.0.3
+info:
+  title: RayPilot API
+  version: 1.0.0
+servers:
+  - url: /
+paths:
+  /api/auth/login:
+    post:
+      summary: 用户或管理员登录
+      responses:
+        "200":
+          description: 登录成功，返回 Access Token
+  /api/auth/refresh:
+    post:
+      summary: 使用 Refresh Token Cookie 刷新 Access Token
+      responses:
+        "200":
+          description: 刷新成功
+  /api/user/me:
+    get:
+      summary: 当前用户信息
+      responses:
+        "200":
+          description: 用户资料和订阅概览
+  /api/user/subscription:
+    get:
+      summary: 当前订阅详情
+      responses:
+        "200":
+          description: 订阅信息和可用订阅 Token
+  /api/user/usage:
+    get:
+      summary: 当前用户流量用量记录
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+          description: 最近多少天，默认 30，范围 7-365
+        - name: weeks
+          in: query
+          schema:
+            type: integer
+          description: 最近多少周，默认 8，范围 4-52
+        - name: months
+          in: query
+          schema:
+            type: integer
+          description: 最近多少月，默认 12，范围 3-36
+      responses:
+        "200":
+          description: 返回今日、本周、本月、截止今日汇总，以及按天/周/月聚合记录
+  /api/plans:
+    get:
+      summary: 上架套餐列表
+      responses:
+        "200":
+          description: 返回未逻辑删除的上架套餐，包含 is_default 基础套餐标识
+  /api/redeem:
+    post:
+      summary: 兑换码开通或续费订阅
+      responses:
+        "200":
+          description: 兑换成功
+  /api/admin/dashboard/stats:
+    get:
+      summary: 管理后台仪表盘统计
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 返回用户、节点、套餐、有效订阅数量
+  /api/admin/users:
+    get:
+      summary: 查询用户列表
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 返回用户基础信息，并附带当前或最近订阅的套餐、状态、已用流量、剩余流量和用量百分比
+    post:
+      summary: 管理员新增用户
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 创建用户、预生成用户级订阅 Token，并自动分配基础套餐订阅
+  /api/admin/users/{id}/subscription:
+    get:
+      summary: 查询指定用户订阅
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: 返回用户最近订阅和订阅 Token 列表
+    put:
+      summary: 开通或调整指定用户订阅
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id, expire_date]
+              properties:
+                plan_id:
+                  type: integer
+                status:
+                  type: string
+                  enum: [ACTIVE, EXPIRED, SUSPENDED, PENDING]
+                expire_date:
+                  type: string
+                traffic_limit:
+                  type: integer
+                used_traffic:
+                  type: integer
+                generate_token:
+                  type: boolean
+                  description: 兼容字段；ACTIVE 订阅会自动确保存在用户级 Token
+      responses:
+        "200":
+          description: 返回保存后的订阅和订阅 Token 列表
+  /api/admin/users/{id}/usage:
+    get:
+      summary: 管理员查询指定用户流量用量记录
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: days
+          in: query
+          schema:
+            type: integer
+          description: 最近多少天，默认 30，范围 7-365
+        - name: weeks
+          in: query
+          schema:
+            type: integer
+          description: 最近多少周，默认 8，范围 4-52
+        - name: months
+          in: query
+          schema:
+            type: integer
+          description: 最近多少月，默认 12，范围 3-36
+        - name: recent
+          in: query
+          schema:
+            type: integer
+          description: 最近原始账本明细条数，默认 50，范围 1-200
+      responses:
+        "200":
+          description: 返回用户、订阅、套餐、今日/本周/本月/截止今日汇总、按天/周/月聚合记录和最近明细
+  /api/admin/subscription-tokens:
+    get:
+      summary: 查询用户级订阅 Token 列表
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 返回 Token、用户信息、当前或最近订阅、套餐摘要、Token 状态、最后使用和过期时间
+    post:
+      summary: 补齐用户级订阅 Token
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: integer
+                expires_at:
+                  type: string
+      responses:
+        "200":
+          description: 返回该用户唯一 Token
+  /api/admin/subscription-tokens/{id}/reset:
+    post:
+      summary: 管理员重置用户级订阅 Token
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: 返回新 Token
+  /api/admin/subscription-tokens/{id}/revoke:
+    post:
+      summary: 撤销用户级订阅 Token
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: 撤销成功
+  /api/admin/relays:
+    get:
+      summary: 中转节点列表
+      description: 查询中转入口、node-agent relay 模式状态和后端绑定摘要；中转节点只做 TCP 透传。
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 返回中转节点列表
+    post:
+      summary: 创建中转节点
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 创建成功
+  /api/admin/nodes/deploy/scan-ips:
+    post:
+      summary: 扫描出口节点服务器公网出口 IP
+      description: 仅在管理员手动开启多 IP 服务器模式后调用；通过 SSH 扫描并验证公网 IPv4，不创建节点、不安装 agent。
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 返回候选 IP、网卡、出口验证状态和是否可用于多 IP 部署
+  /api/admin/nodes/deploy:
+    post:
+      summary: 一键部署出口节点
+      description: 默认单 IP 部署；multi_ip_enabled=true 时，按管理员确认的 selected_ips 创建 node_hosts 和多条逻辑出口 nodes，并只启动一个 multi_exit node-agent。
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 单 IP 返回 node_id；多 IP 返回 node_host_id、node_ids 和本次可见的 node_host_token
+  /api/admin/relays/deploy:
+    post:
+      summary: 一键部署中转节点
+      description: 通过 SSH 部署 node-agent relay 模式和 HAProxy，创建 relays 记录并等待心跳回连。
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 部署成功
+  /api/admin/relays/{id}/backends:
+    get:
+      summary: 查询中转后端绑定
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: 返回监听端口到出口节点的绑定列表
+    put:
+      summary: 保存中转后端绑定
+      description: 保存后应创建 relay_config_tasks，由 node-agent relay 模式渲染并 reload 转发配置。
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: 保存成功
+  /api/agent/relay/heartbeat:
+    post:
+      summary: 中转节点心跳
+      description: node-agent relay 模式使用 RELAY_TOKEN 上报心跳并拉取 relay_config_tasks。
+      responses:
+        "200":
+          description: 返回中转配置任务列表
+  /api/agent/relay/task-result:
+    post:
+      summary: 中转配置任务结果上报
+      description: node-agent relay 模式上报 HAProxy 配置渲染、校验和 reload 结果。
+      responses:
+        "200":
+          description: 上报成功
+  /api/agent/relay/traffic:
+    post:
+      summary: 中转线路级指标上报
+      description: 上报 relay_backend/listen_port 维度指标，仅用于运维分析，不作为用户套餐扣量依据。
+      responses:
+        "200":
+          description: 上报成功
+  /sub/{token}/{format}:
+    get:
+      summary: 下载订阅配置
+      description: 一个用户级 Token 返回直连和中转多条线路；中转线路 server/port 来自中转节点，Reality 参数来自出口节点；用户连接中转不需要中转专用用户 Token。
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: format
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [clash, base64, plain]
+      responses:
+        "200":
+          description: 订阅内容
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

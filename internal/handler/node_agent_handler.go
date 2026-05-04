@@ -26,6 +26,7 @@ type AgentHandler struct {
 	nodeAccessSvc *service.NodeAccessService
 	trafficSvc    *service.TrafficService
 	nodeRepo      *repository.NodeRepository
+	nodeHostRepo  *repository.NodeHostRepository
 	relaySvc      *service.RelayService
 	relayTraffic  *service.RelayTrafficService
 	relayRepo     *repository.RelayRepository
@@ -59,6 +60,22 @@ func NewAgentHandlerWithRelay(nodeAccessSvc *service.NodeAccessService, trafficS
 	h.relayTraffic = relayTraffic
 	h.relayRepo = relayRepo
 	return h
+}
+
+// NewAgentHandlerWithRelayAndNodeHosts 创建支持单出口、多出口和中转的 agent 通信处理器。
+func NewAgentHandlerWithRelayAndNodeHosts(nodeAccessSvc *service.NodeAccessService, trafficSvc *service.TrafficService, nodeRepo *repository.NodeRepository, nodeHostRepo *repository.NodeHostRepository, relaySvc *service.RelayService, relayTraffic *service.RelayTrafficService, relayRepo *repository.RelayRepository) *AgentHandler {
+	h := NewAgentHandlerWithRelay(nodeAccessSvc, trafficSvc, nodeRepo, relaySvc, relayTraffic, relayRepo)
+	h.nodeHostRepo = nodeHostRepo
+	return h
+}
+
+type multiAgentTask struct {
+	NodeID         uint64 `json:"node_id"`
+	ID             int64  `json:"id"`
+	Action         string `json:"action"`
+	Payload        string `json:"payload"`
+	IdempotencyKey string `json:"idempotency_key"`
+	LockToken      string `json:"lock_token"`
 }
 
 // Heartbeat 处理 POST /api/agent/heartbeat — 节点心跳上报。
@@ -184,6 +201,157 @@ func (h *AgentHandler) TrafficReport(c *gin.Context) {
 	if err := h.nodeRepo.MarkTrafficReportSuccess(c.Request.Context(), req.NodeID, receivedAt, successAt); err != nil {
 		response.HandleError(c, response.ErrInternalServer)
 		return
+	}
+
+	response.Success(c, nil)
+}
+
+// MultiHeartbeat 处理 POST /api/agent/multi/heartbeat — 单 agent 多出口节点心跳。
+func (h *AgentHandler) MultiHeartbeat(c *gin.Context) {
+	if h.nodeHostRepo == nil {
+		response.HandleError(c, response.ErrNotFound)
+		return
+	}
+	var req struct {
+		NodeHostID uint64 `json:"node_host_id" binding:"required"`
+		Version    string `json:"version"`
+		Token      string `json:"token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.HandleError(c, response.ErrBadRequest)
+		return
+	}
+
+	host, err := h.nodeHostRepo.FindByID(c.Request.Context(), req.NodeHostID)
+	if err != nil || !validAgentToken(host.AgentTokenHash, req.Token) {
+		response.HandleError(c, response.ErrUnauthorized)
+		return
+	}
+	_ = h.nodeHostRepo.UpdateHeartbeat(c.Request.Context(), req.NodeHostID, req.Version)
+
+	nodes, err := h.nodeRepo.FindByNodeHostID(c.Request.Context(), req.NodeHostID, false)
+	if err != nil {
+		response.HandleError(c, response.ErrInternalServer)
+		return
+	}
+
+	agentTasks := make([]multiAgentTask, 0)
+	for _, node := range nodes {
+		_ = h.nodeRepo.UpdateHeartbeat(c.Request.Context(), node.ID)
+		tasks, err := h.nodeAccessSvc.ProcessHeartbeat(c.Request.Context(), node.ID)
+		if err != nil {
+			response.HandleError(c, response.ErrInternalServer)
+			return
+		}
+		for _, t := range tasks {
+			payloadStr := ""
+			if t.Payload != nil {
+				payloadStr = *t.Payload
+			}
+			lockToken := ""
+			if t.LockToken != nil {
+				lockToken = *t.LockToken
+			}
+			agentTasks = append(agentTasks, multiAgentTask{
+				NodeID:         node.ID,
+				ID:             int64(t.ID),
+				Action:         t.Action,
+				Payload:        payloadStr,
+				IdempotencyKey: t.IdempotencyKey,
+				LockToken:      lockToken,
+			})
+		}
+	}
+
+	response.Success(c, gin.H{"tasks": agentTasks})
+}
+
+// MultiTaskResult 处理 POST /api/agent/multi/task-result — 单 agent 多出口节点任务结果。
+func (h *AgentHandler) MultiTaskResult(c *gin.Context) {
+	if h.nodeHostRepo == nil {
+		response.HandleError(c, response.ErrNotFound)
+		return
+	}
+	var req struct {
+		NodeHostID uint64 `json:"node_host_id" binding:"required"`
+		NodeID     uint64 `json:"node_id" binding:"required"`
+		Token      string `json:"token" binding:"required"`
+		TaskID     uint64 `json:"task_id" binding:"required"`
+		Success    bool   `json:"success"`
+		Error      string `json:"error"`
+		LockToken  string `json:"lock_token"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.HandleError(c, response.ErrBadRequest)
+		return
+	}
+
+	host, err := h.nodeHostRepo.FindByID(c.Request.Context(), req.NodeHostID)
+	if err != nil || !validAgentToken(host.AgentTokenHash, req.Token) {
+		response.HandleError(c, response.ErrUnauthorized)
+		return
+	}
+	ok, err := h.nodeRepo.BelongsToNodeHost(c.Request.Context(), req.NodeID, req.NodeHostID)
+	if err != nil || !ok {
+		response.HandleError(c, response.ErrUnauthorized)
+		return
+	}
+	if err := h.nodeAccessSvc.ReportTaskResult(c.Request.Context(), req.TaskID, req.NodeID, req.LockToken, req.Success, req.Error); err != nil {
+		response.HandleError(c, response.ErrInternalServer)
+		return
+	}
+	response.Success(c, nil)
+}
+
+// MultiTrafficReport 处理 POST /api/agent/multi/traffic — 单 agent 多出口节点流量上报。
+func (h *AgentHandler) MultiTrafficReport(c *gin.Context) {
+	if h.nodeHostRepo == nil {
+		response.HandleError(c, response.ErrNotFound)
+		return
+	}
+	var req struct {
+		NodeHostID uint64 `json:"node_host_id" binding:"required"`
+		Token      string `json:"token" binding:"required"`
+		Reports    []struct {
+			NodeID      uint64                `json:"node_id" binding:"required"`
+			CollectedAt *time.Time            `json:"collected_at"`
+			Items       []service.TrafficItem `json:"items" binding:"required"`
+		} `json:"reports" binding:"required"`
+	}
+	receivedAt := time.Now()
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.HandleError(c, response.ErrBadRequest)
+		return
+	}
+
+	host, err := h.nodeHostRepo.FindByID(c.Request.Context(), req.NodeHostID)
+	if err != nil || !validAgentToken(host.AgentTokenHash, req.Token) {
+		response.HandleError(c, response.ErrUnauthorized)
+		return
+	}
+	for _, report := range req.Reports {
+		ok, err := h.nodeRepo.BelongsToNodeHost(c.Request.Context(), report.NodeID, req.NodeHostID)
+		if err != nil || !ok {
+			response.HandleError(c, response.ErrUnauthorized)
+			return
+		}
+		opts := service.TrafficReportOptions{}
+		if report.CollectedAt != nil {
+			opts.CollectedAt = *report.CollectedAt
+		}
+		if err := h.trafficSvc.ProcessTrafficReportWithOptions(c.Request.Context(), report.NodeID, report.Items, opts); err != nil {
+			_ = h.nodeRepo.MarkTrafficReportFailure(c.Request.Context(), report.NodeID, err.Error(), receivedAt)
+			response.HandleError(c, response.ErrInternalServer)
+			return
+		}
+		successAt := receivedAt
+		if !opts.CollectedAt.IsZero() {
+			successAt = opts.CollectedAt
+		}
+		if err := h.nodeRepo.MarkTrafficReportSuccess(c.Request.Context(), report.NodeID, receivedAt, successAt); err != nil {
+			response.HandleError(c, response.ErrInternalServer)
+			return
+		}
 	}
 
 	response.Success(c, nil)

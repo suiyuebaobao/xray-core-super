@@ -61,6 +61,7 @@ export const adminApi = {
     create: (payload) => httpPost('/api/admin/nodes', payload),
     update: (id, payload) => httpPut(`/api/admin/nodes/${id}`, payload),
     delete: (id) => httpDelete(`/api/admin/nodes/${id}`),
+    scanDeployIps: (payload) => httpPost('/api/admin/nodes/deploy/scan-ips', payload),
     deploy: (payload) => httpPost('/api/admin/nodes/deploy', payload),
   },
   relays: {

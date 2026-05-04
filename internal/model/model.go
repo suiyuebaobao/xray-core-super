@@ -221,6 +221,30 @@ type BindNodeGroupNodesRequest struct {
 	NodeIDs []uint64 `json:"node_ids" binding:"required"`
 }
 
+// NodeHost 物理节点服务器模型。
+//
+// 一台物理服务器只运行一个 node-agent；多出口 IP 场景下，
+// 同一个 NodeHost 可以关联多个逻辑出口节点 Node。
+type NodeHost struct {
+	ID              uint64     `gorm:"primaryKey;column:id" json:"id"`
+	Name            string     `gorm:"column:name;type:varchar(128)" json:"name"`
+	SSHHost         string     `gorm:"column:ssh_host;type:varchar(255)" json:"ssh_host"`
+	SSHPort         uint32     `gorm:"column:ssh_port;default:22" json:"ssh_port"`
+	AgentBaseURL    string     `gorm:"column:agent_base_url;type:varchar(255)" json:"agent_base_url"`
+	AgentToken      string     `gorm:"-" json:"-"`
+	AgentTokenHash  string     `gorm:"column:agent_token_hash;type:varchar(255)" json:"-"`
+	AgentVersion    *string    `gorm:"column:agent_version;type:varchar(32)" json:"agent_version,omitempty"`
+	LastHeartbeatAt *time.Time `gorm:"column:last_heartbeat_at" json:"last_heartbeat_at,omitempty"`
+	IsEnabled       bool       `gorm:"column:is_enabled;default:true;index" json:"is_enabled"`
+	CreatedAt       time.Time  `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+}
+
+// TableName 指定表名。
+func (NodeHost) TableName() string {
+	return "node_hosts"
+}
+
 // Node 节点模型。
 type Node struct {
 	ID                   uint64     `gorm:"primaryKey;column:id" json:"id"`
@@ -234,6 +258,11 @@ type Node struct {
 	Fingerprint          string     `gorm:"column:fingerprint;type:varchar(32);default:chrome" json:"fingerprint"`
 	Flow                 string     `gorm:"column:flow;type:varchar(32);default:xtls-rprx-vision" json:"flow"`
 	LineMode             string     `gorm:"column:line_mode;type:varchar(32);default:direct_and_relay" json:"line_mode"`
+	NodeHostID           *uint64    `gorm:"column:node_host_id;index" json:"node_host_id,omitempty"`
+	ListenIP             string     `gorm:"column:listen_ip;type:varchar(45)" json:"listen_ip"`
+	OutboundIP           string     `gorm:"column:outbound_ip;type:varchar(45)" json:"outbound_ip"`
+	XrayInboundTag       string     `gorm:"column:xray_inbound_tag;type:varchar(64)" json:"xray_inbound_tag"`
+	XrayOutboundTag      string     `gorm:"column:xray_outbound_tag;type:varchar(64)" json:"xray_outbound_tag"`
 	NodeGroupID          *uint64    `gorm:"column:node_group_id;index" json:"node_group_id"`
 	AgentBaseURL         string     `gorm:"column:agent_base_url;type:varchar(255)" json:"agent_base_url"`
 	AgentToken           string     `gorm:"-" json:"-"`

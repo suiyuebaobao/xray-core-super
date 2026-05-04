@@ -135,6 +135,50 @@ func TestEnsureXrayStatsConfigMap_AddsStatsAPIAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestBuildMultiExitXrayConfigMap_BindsListenAndSendThroughPerNode(t *testing.T) {
+	cfg := buildMultiExitXrayConfigMap([]MultiExitNodeConfig{
+		{
+			NodeID:            1,
+			IP:                "154.219.106.105",
+			Port:              443,
+			InboundTag:        "node_1_in",
+			OutboundTag:       "node_1_out",
+			XrayUserKeyPrefix: "node_1__",
+		},
+		{
+			NodeID:            2,
+			IP:                "154.219.106.106",
+			Port:              443,
+			InboundTag:        "node_2_in",
+			OutboundTag:       "node_2_out",
+			XrayUserKeyPrefix: "node_2__",
+		},
+	}, multiExitReality{
+		ServerName: "www.microsoft.com",
+		PublicKey:  "pub",
+		PrivateKey: "priv",
+		ShortID:    "",
+	}, map[string][]interface{}{
+		"node_1_in": {
+			map[string]interface{}{"id": "uuid", "email": "node_1__user@test"},
+		},
+	}, "127.0.0.1:10085")
+
+	inbounds := cfg["inbounds"].([]interface{})
+	if findTaggedObject(inbounds, "node_1_in") < 0 || findTaggedObject(inbounds, "node_2_in") < 0 {
+		t.Fatalf("multi node inbounds missing: %#v", inbounds)
+	}
+	outbounds := cfg["outbounds"].([]interface{})
+	node1Out := outbounds[1].(map[string]interface{})
+	if node1Out["tag"] != "node_1_out" || node1Out["sendThrough"] != "154.219.106.105" {
+		t.Fatalf("node 1 outbound = %#v, want sendThrough 154.219.106.105", node1Out)
+	}
+	node2Out := outbounds[2].(map[string]interface{})
+	if node2Out["tag"] != "node_2_out" || node2Out["sendThrough"] != "154.219.106.106" {
+		t.Fatalf("node 2 outbound = %#v, want sendThrough 154.219.106.106", node2Out)
+	}
+}
+
 func TestXrayStatValueUnmarshal_AcceptsNumberAndString(t *testing.T) {
 	var numberValue xrayStatValue
 	if err := json.Unmarshal([]byte(`123`), &numberValue); err != nil {
@@ -150,6 +194,59 @@ func TestXrayStatValueUnmarshal_AcceptsNumberAndString(t *testing.T) {
 	}
 	if stringValue != 456 {
 		t.Fatalf("stringValue = %d, want 456", stringValue)
+	}
+}
+
+func TestTrafficQueueFlush_MultiExitReportsNodeIDToMultiEndpoint(t *testing.T) {
+	var received []MultiTrafficReportReq
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent/multi/traffic" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var req MultiTrafficReportReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		received = append(received, req)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	queuePath := filepath.Join(t.TempDir(), "multi_traffic_queue.json")
+	agent := NewAgent(&Config{
+		CenterServerURL:   server.URL,
+		AgentRole:         "multi_exit",
+		NodeHostID:        9,
+		NodeHostToken:     "host-token",
+		XrayConfigPath:    filepath.Join(t.TempDir(), "config.json"),
+		TrafficQueuePath:  queuePath,
+		TrafficQueueLimit: 10,
+	})
+
+	collectedAt := time.Now().UTC().Truncate(time.Second)
+	agent.enqueueTrafficReport(TrafficReportBatch{
+		NodeID:      7,
+		CollectedAt: collectedAt,
+		Items:       []TrafficItem{{XrayUserKey: "user@test", UplinkTotal: 3}},
+	})
+	agent.flushTrafficQueue(contextWithTimeout(t, time.Second))
+
+	if len(received) != 1 {
+		t.Fatalf("received %d requests, want 1", len(received))
+	}
+	req := received[0]
+	if req.NodeHostID != 9 || req.Token != "host-token" {
+		t.Fatalf("request auth = host %d token %q, want host 9 token host-token", req.NodeHostID, req.Token)
+	}
+	if len(req.Reports) != 1 || req.Reports[0].NodeID != 7 {
+		t.Fatalf("reports = %+v, want node_id=7", req.Reports)
+	}
+	if req.Reports[0].CollectedAt != collectedAt {
+		t.Fatalf("collected_at = %s, want %s", req.Reports[0].CollectedAt, collectedAt)
+	}
+	if len(agent.trafficQueue) != 0 {
+		t.Fatalf("queue len = %d, want 0", len(agent.trafficQueue))
 	}
 }
 

@@ -49,6 +49,32 @@ func (h *NodeDeployHandler) Deploy(c *gin.Context) {
 	response.Success(c, result)
 }
 
+// ScanIPs 处理 POST /api/admin/nodes/deploy/scan-ips — 扫描服务器出口 IP。
+func (h *NodeDeployHandler) ScanIPs(c *gin.Context) {
+	var req service.ScanIPsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.HandleError(c, response.ErrBadRequest)
+		return
+	}
+
+	if req.SSHPort == 0 {
+		req.SSHPort = 22
+	}
+
+	result, err := h.deploySvc.ScanIPs(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, response.Response{
+			Success: false,
+			Message: "扫描失败: " + err.Error(),
+			Code:    50002,
+			Data:    result,
+		})
+		return
+	}
+
+	response.Success(c, result)
+}
+
 // RelayDeployHandler 中转节点部署处理器。
 type RelayDeployHandler struct {
 	deploySvc *service.RelayDeployService

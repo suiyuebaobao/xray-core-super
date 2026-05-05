@@ -381,6 +381,7 @@ test('real user flows cover signup, plans, orders, redeem, subscriptions, profil
     await pageA.getByPlaceholder('可选').fill(profileEmail)
     await pageA.getByRole('button', { name: '保存' }).click()
     await expect(pageA.getByText('资料已更新')).toBeVisible()
+    await expect(pageA.locator('.user-profile input').first()).toHaveValue(userA.username)
     const profileData = await api(userAActor.request, userAActor.token, 'get', '/api/user/me')
     expect(profileData.user.email).toBe(profileEmail)
 

@@ -398,14 +398,16 @@ async function handleSaveNodes() {
 
   nodesSaving.value = true
   try {
-    await adminApi.nodeGroups.bindNodes(managingGroup.value.id, selectedNodeIds.value)
+    const groupId = managingGroup.value.id
+    await adminApi.nodeGroups.bindNodes(groupId, selectedNodeIds.value)
     const selectedSet = new Set(selectedNodeIds.value.map((id) => String(id)))
     groupNodesMap.value = {
       ...groupNodesMap.value,
-      [String(managingGroup.value.id)]: allNodes.value.filter((node) => selectedSet.has(String(node.id))),
+      [String(groupId)]: allNodes.value.filter((node) => selectedSet.has(String(node.id))),
     }
     ElMessage.success('节点绑定已保存')
     nodesDialogVisible.value = false
+    await fetchGroups()
   } catch (err) {
     ElMessage.error(err.message || '保存节点绑定失败')
   } finally {

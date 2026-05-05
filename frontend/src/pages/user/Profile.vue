@@ -76,10 +76,17 @@ async function handleUpdateProfile() {
     const body = {}
     if (form.email) body.email = form.email
     const res = await userApi.updateProfile(body)
+    let latestUser = res.data.user || null
+    try {
+      const meRes = await userApi.me()
+      latestUser = meRes.data.user || latestUser
+    } catch {
+      // 保存成功后刷新资料失败时，保留保存接口返回的信息。
+    }
     ElMessage.success('资料已更新')
-    // 更新本地用户信息
-    if (res.data.user) {
-      userStore.updateUser(res.data.user)
+    if (latestUser) {
+      userStore.updateUser(latestUser)
+      form.email = latestUser.email || ''
     }
   } catch (err) {
     ElMessage.error(err.message || '更新失败')

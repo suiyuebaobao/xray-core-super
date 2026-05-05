@@ -5,6 +5,25 @@
       <el-button type="primary" @click="showGenerateDialog">生成兑换码</el-button>
     </div>
 
+    <el-alert
+      v-if="generatedCodes.length"
+      title="本次生成的兑换码"
+      type="success"
+      show-icon
+      closable
+      class="generated-codes-alert"
+      @close="generatedCodes = []"
+    >
+      <template #default>
+        <div class="generated-code-list">
+          <div v-for="code in generatedCodes" :key="code" class="generated-code-row">
+            <span class="generated-code-text">{{ code }}</span>
+            <el-button size="small" type="primary" plain @click="copyGeneratedCode(code)">复制</el-button>
+          </div>
+        </div>
+      </template>
+    </el-alert>
+
     <el-table :data="codes" border style="width: 100%" v-loading="loading">
       <el-table-column prop="id" label="ID" width="60" />
       <el-table-column prop="code" label="兑换码" width="180">
@@ -70,6 +89,7 @@ const total = ref(0)
 const dialogVisible = ref(false)
 const generating = ref(false)
 const formRef = ref(null)
+const generatedCodes = ref([])
 
 const form = reactive({
   plan_id: 1,
@@ -88,6 +108,32 @@ function formatDate(dateStr) {
   return new Date(dateStr).toLocaleString('zh-CN')
 }
 
+async function copyGeneratedCode(code) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(code)
+    } else if (!fallbackCopy(code)) {
+      throw new Error('fallback copy failed')
+    }
+    ElMessage.success('兑换码已复制')
+  } catch {
+    ElMessage.error('复制失败，请手动复制')
+  }
+}
+
+function fallbackCopy(text) {
+  const input = document.createElement('textarea')
+  input.value = text
+  input.setAttribute('readonly', 'readonly')
+  input.style.position = 'fixed'
+  input.style.left = '-9999px'
+  document.body.appendChild(input)
+  input.select()
+  const ok = document.execCommand('copy')
+  document.body.removeChild(input)
+  return ok
+}
+
 async function showGenerateDialog() {
   dialogVisible.value = true
 }
@@ -103,6 +149,7 @@ async function handleGenerate() {
       duration_days: form.duration_days,
       count: form.count,
     })
+    generatedCodes.value = res.data.codes || []
     ElMessage.success(`成功生成 ${res.data.count} 个兑换码`)
     dialogVisible.value = false
     page.value = 1
@@ -141,5 +188,24 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
+}
+.generated-codes-alert {
+  margin-bottom: 16px;
+}
+.generated-code-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.generated-code-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.generated-code-text {
+  min-width: 180px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
 }
 </style>

@@ -482,6 +482,8 @@ test.describe('admin operations flow', () => {
         await fillFormField(dialog, '数量', 1)
         await dialog.getByRole('button', { name: '生成' }).click()
         const generated = await waitForNewRedeemCode(request, adminToken, beforeIds, created.planId)
+        await expect(page.getByText('本次生成的兑换码')).toBeVisible()
+        await expect(page.getByText(generated.code).first()).toBeVisible()
         await page.reload()
         await page.waitForLoadState('networkidle')
         await expect(tableRow(page, '.admin-redeem-codes', generated.code)).toBeVisible()

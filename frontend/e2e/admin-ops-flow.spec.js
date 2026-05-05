@@ -303,6 +303,10 @@ test.describe('admin operations flow', () => {
         await fillFormField(dialog, '节点名称', nodeName)
         await fillFormField(dialog, '地址', '203.0.113.20')
         await fillFormField(dialog, '端口', 24430)
+        await selectFormOption(page, dialog, '传输模式', 'XHTTP + Reality')
+        await fillFormField(dialog, 'XHTTP Path', '/e2e-xhttp')
+        await selectFormOption(page, dialog, 'XHTTP Mode', 'stream-up')
+        await fillFormField(dialog, 'XHTTP Host', 'cdn.example.test')
         await fillFormField(dialog, 'Server Name', 'www.microsoft.com')
         await fillFormField(dialog, 'Public Key', 'E2ETestPublicKey123456789012345678901234567')
         await fillFormField(dialog, 'Short ID', 'abcd1234')
@@ -311,7 +315,12 @@ test.describe('admin operations flow', () => {
         await fillFormField(dialog, 'Agent Token', `node-token-${suffix}`)
         await dialog.getByRole('button', { name: '保存' }).click()
         await expect(tableRow(page, '.admin-nodes', nodeName)).toBeVisible()
-        created.nodeId = (await findByName(request, adminToken, '/api/admin/nodes', 'nodes', nodeName)).id
+        await expect(tableRow(page, '.admin-nodes', nodeName)).toContainText('XHTTP')
+        const createdNode = await findByName(request, adminToken, '/api/admin/nodes', 'nodes', nodeName)
+        created.nodeId = createdNode.id
+        expect(createdNode.transport).toBe('xhttp')
+        expect(createdNode.xhttp_path).toBe('/e2e-xhttp')
+        expect(createdNode.flow || '').toBe('')
 
         await tableRow(page, '.admin-nodes', nodeName).getByRole('button', { name: '编辑' }).click()
         dialog = activeDialog(page, '编辑节点')
@@ -321,6 +330,7 @@ test.describe('admin operations flow', () => {
         await fillFormField(dialog, '端口', 24431)
         await dialog.getByRole('button', { name: '保存' }).click()
         await expect(tableRow(page, '.admin-nodes', nodeName)).toBeVisible()
+        await expect(tableRow(page, '.admin-nodes', nodeName)).toContainText('XHTTP')
 
         await page.getByRole('button', { name: '一键部署' }).click()
         dialog = activeDialog(page, '一键部署节点')

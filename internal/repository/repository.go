@@ -1276,6 +1276,10 @@ func NewNodeRepository(db *gorm.DB) *NodeRepository {
 // Create 创建节点。
 func (r *NodeRepository) Create(ctx context.Context, node *model.Node) (*model.Node, error) {
 	err := r.db.WithContext(ctx).Create(node).Error
+	if err == nil && node.Transport == "xhttp" && node.Flow != "" {
+		node.Flow = ""
+		err = r.db.WithContext(ctx).Model(node).Update("flow", "").Error
+	}
 	return node, err
 }
 

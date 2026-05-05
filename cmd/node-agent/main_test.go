@@ -179,6 +179,42 @@ func TestBuildMultiExitXrayConfigMap_BindsListenAndSendThroughPerNode(t *testing
 	}
 }
 
+func TestBuildMultiExitXrayConfigMap_XHTTPStreamSettings(t *testing.T) {
+	cfg := buildMultiExitXrayConfigMap([]MultiExitNodeConfig{
+		{
+			NodeID:      3,
+			IP:          "154.219.106.105",
+			Port:        443,
+			Transport:   "xhttp",
+			XHTTPPath:   "raypilot-xhttp",
+			XHTTPHost:   "cdn.example.com",
+			XHTTPMode:   "stream-up",
+			InboundTag:  "node_3_in",
+			OutboundTag: "node_3_out",
+		},
+	}, multiExitReality{
+		ServerName: "www.microsoft.com",
+		PublicKey:  "pub",
+		PrivateKey: "priv",
+		ShortID:    "sid",
+	}, nil, "127.0.0.1:10085")
+
+	inbounds := cfg["inbounds"].([]interface{})
+	idx := findTaggedObject(inbounds, "node_3_in")
+	if idx < 0 {
+		t.Fatalf("xhttp inbound missing: %#v", inbounds)
+	}
+	inbound := inbounds[idx].(map[string]interface{})
+	stream := inbound["streamSettings"].(map[string]interface{})
+	if stream["network"] != "xhttp" {
+		t.Fatalf("network = %#v, want xhttp", stream["network"])
+	}
+	xhttpOpts := stream["xhttpSettings"].(map[string]interface{})
+	if xhttpOpts["path"] != "/raypilot-xhttp" || xhttpOpts["mode"] != "stream-up" || xhttpOpts["host"] != "cdn.example.com" {
+		t.Fatalf("xhttpSettings = %#v", xhttpOpts)
+	}
+}
+
 func TestXrayStatValueUnmarshal_AcceptsNumberAndString(t *testing.T) {
 	var numberValue xrayStatValue
 	if err := json.Unmarshal([]byte(`123`), &numberValue); err != nil {

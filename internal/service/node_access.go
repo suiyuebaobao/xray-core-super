@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"suiyue/internal/config"
@@ -187,7 +188,11 @@ func (s *NodeAccessService) createTasksForSubscription(ctx context.Context, user
 		if uuid != "" {
 			payloadData["uuid"] = uuid
 		}
-		payloadData["flow"] = "xtls-rprx-vision"
+		transport, flow := nodeAccessTransportAndFlow(node)
+		payloadData["transport"] = transport
+		if flow != "" {
+			payloadData["flow"] = flow
+		}
 
 		payloadBytes, _ := json.Marshal(payloadData)
 		payloadStr := string(payloadBytes)
@@ -233,7 +238,11 @@ func (s *NodeAccessService) createTaskForNode(ctx context.Context, nodeID uint64
 		"subscription_id": subID,
 		"xray_user_key":   user.XrayUserKey,
 		"uuid":            user.UUID,
-		"flow":            "xtls-rprx-vision",
+	}
+	transport, flow := nodeAccessTransportAndFlow(*node)
+	payloadData["transport"] = transport
+	if flow != "" {
+		payloadData["flow"] = flow
 	}
 	payloadBytes, _ := json.Marshal(payloadData)
 	payloadStr := string(payloadBytes)
@@ -249,6 +258,18 @@ func (s *NodeAccessService) createTaskForNode(ctx context.Context, nodeID uint64
 	}
 
 	return s.taskRepo.Create(ctx, task)
+}
+
+func nodeAccessTransportAndFlow(node model.Node) (string, string) {
+	transport := normalizeTransport(node.Transport)
+	if transport == "xhttp" {
+		return transport, ""
+	}
+	flow := strings.TrimSpace(node.Flow)
+	if flow == "" {
+		flow = "xtls-rprx-vision"
+	}
+	return transport, flow
 }
 
 func (s *NodeAccessService) listActiveSubscriptionsForGroups(ctx context.Context, groupIDs []uint64) ([]model.UserSubscription, error) {

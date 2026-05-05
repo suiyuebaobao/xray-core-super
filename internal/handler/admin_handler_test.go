@@ -761,6 +761,41 @@ func TestAdminHandler_CreateNode(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
+func TestAdminHandler_CreateNode_XHTTPNormalizesTransport(t *testing.T) {
+	r, token := setupTestAdminApp(t)
+
+	body := map[string]interface{}{
+		"name":           "xhttp-node",
+		"protocol":       "vless",
+		"host":           "xhttp.node.test",
+		"port":           443,
+		"transport":      "xhttp",
+		"xhttp_path":     "raypilot-xhttp",
+		"xhttp_mode":     "stream-up",
+		"xhttp_host":     "cdn.example.com",
+		"flow":           "xtls-rprx-vision",
+		"agent_base_url": "http://node:8080",
+		"agent_token":    "secret-token",
+		"server_name":    "www.microsoft.com",
+	}
+	jsonBody, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/nodes", bytes.NewReader(jsonBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data := resp["data"].(map[string]interface{})
+	assert.Equal(t, "xhttp", data["transport"])
+	assert.Equal(t, "/raypilot-xhttp", data["xhttp_path"])
+	assert.Equal(t, "stream-up", data["xhttp_mode"])
+	assert.Equal(t, "cdn.example.com", data["xhttp_host"])
+	assert.Equal(t, "", data["flow"])
+}
+
 // TestAdminHandler_ListNodes 测试列出节点。
 func TestAdminHandler_ListNodes(t *testing.T) {
 	r, token := setupTestAdminApp(t)

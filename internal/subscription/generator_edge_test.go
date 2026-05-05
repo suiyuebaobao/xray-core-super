@@ -54,7 +54,7 @@ func TestGenerator_SpecialCharacters(t *testing.T) {
 
 	uriContent := gen.GeneratePlainURI(nodes)
 	assert.True(t, strings.HasPrefix(uriContent, "vless://"))
-	assert.Contains(t, uriContent, "HK-节点-01")
+	assert.Contains(t, uriContent, "#HK-%E8%8A%82%E7%82%B9-01%20%5B%E6%B5%8B%E8%AF%95%5D")
 }
 
 // TestGenerator_MultipleNodes 测试大量节点生成。

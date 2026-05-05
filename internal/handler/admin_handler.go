@@ -18,6 +18,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"suiyue/internal/middleware"
@@ -501,6 +502,48 @@ type nodeAccessNodeSyncer interface {
 	TriggerForNodeGroups(ctx context.Context, nodeID uint64, groupIDs []uint64, action string) error
 }
 
+func normalizeNodeTransportFields(transport, xhttpPath, xhttpHost, xhttpMode, flow *string) {
+	t := strings.ToLower(strings.TrimSpace(*transport))
+	if t == "" {
+		t = "tcp"
+	}
+	if t != "xhttp" {
+		t = "tcp"
+	}
+	*transport = t
+
+	*xhttpHost = strings.TrimSpace(*xhttpHost)
+	mode := strings.ToLower(strings.TrimSpace(*xhttpMode))
+	switch mode {
+	case "packet-up", "stream-up", "stream-one":
+	default:
+		mode = "auto"
+	}
+	*xhttpMode = mode
+
+	if t == "xhttp" {
+		path := strings.TrimSpace(*xhttpPath)
+		if path == "" {
+			path = "/raypilot"
+		}
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		*xhttpPath = path
+		*flow = ""
+		return
+	}
+
+	*xhttpPath = ""
+	*xhttpHost = ""
+	*xhttpMode = "auto"
+	if strings.TrimSpace(*flow) == "" {
+		*flow = "xtls-rprx-vision"
+	} else {
+		*flow = strings.TrimSpace(*flow)
+	}
+}
+
 // Create 处理 POST /api/admin/nodes — 创建节点。
 func (h *AdminNodeHandler) Create(c *gin.Context) {
 	var req model.CreateNodeRequest
@@ -511,14 +554,12 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 	if req.Protocol == "" {
 		req.Protocol = "vless"
 	}
+	normalizeNodeTransportFields(&req.Transport, &req.XHTTPPath, &req.XHTTPHost, &req.XHTTPMode, &req.Flow)
 	if req.Port == 0 {
 		req.Port = 443
 	}
 	if req.Fingerprint == "" {
 		req.Fingerprint = "chrome"
-	}
-	if req.Flow == "" {
-		req.Flow = "xtls-rprx-vision"
 	}
 	if req.LineMode == "" {
 		req.LineMode = "direct_and_relay"
@@ -534,6 +575,7 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 	node, err := h.nodeRepo.Create(c.Request.Context(), &model.Node{
 		Name:           req.Name,
 		Protocol:       req.Protocol,
+		Transport:      req.Transport,
 		Host:           req.Host,
 		Port:           req.Port,
 		ServerName:     req.ServerName,
@@ -542,6 +584,9 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 		Fingerprint:    req.Fingerprint,
 		Flow:           req.Flow,
 		LineMode:       req.LineMode,
+		XHTTPPath:      req.XHTTPPath,
+		XHTTPHost:      req.XHTTPHost,
+		XHTTPMode:      req.XHTTPMode,
 		AgentBaseURL:   req.AgentBaseURL,
 		AgentTokenHash: agentTokenHash,
 		SortWeight:     req.SortWeight,
@@ -586,6 +631,13 @@ func (h *AdminNodeHandler) Update(c *gin.Context) {
 	if req.Protocol != "" {
 		node.Protocol = req.Protocol
 	}
+	if req.Transport == "" {
+		req.Transport = node.Transport
+	}
+	normalizeNodeTransportFields(&req.Transport, &req.XHTTPPath, &req.XHTTPHost, &req.XHTTPMode, &req.Flow)
+	if req.Transport != "" {
+		node.Transport = req.Transport
+	}
 	node.Host = req.Host
 	if req.Port != 0 {
 		node.Port = req.Port
@@ -599,9 +651,15 @@ func (h *AdminNodeHandler) Update(c *gin.Context) {
 	if req.Flow != "" {
 		node.Flow = req.Flow
 	}
+	if req.Transport == "xhttp" {
+		node.Flow = ""
+	}
 	if req.LineMode != "" {
 		node.LineMode = req.LineMode
 	}
+	node.XHTTPPath = req.XHTTPPath
+	node.XHTTPHost = req.XHTTPHost
+	node.XHTTPMode = req.XHTTPMode
 	node.AgentBaseURL = req.AgentBaseURL
 	if req.AgentToken != "" {
 		h := sha256.Sum256([]byte(req.AgentToken))

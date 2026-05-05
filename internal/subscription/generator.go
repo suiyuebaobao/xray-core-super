@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 	"unicode"
@@ -271,6 +272,10 @@ type NodeConfig struct {
 	ShortID     string
 	Fingerprint string
 	Flow        string
+	Transport   string
+	XHTTPPath   string
+	XHTTPHost   string
+	XHTTPMode   string
 }
 
 func buildNodeConfigFromExitNode(node model.Node, uuid string, name string, server string, port uint32) NodeConfig {
@@ -284,7 +289,49 @@ func buildNodeConfigFromExitNode(node model.Node, uuid string, name string, serv
 		ShortID:     node.ShortID,
 		Fingerprint: node.Fingerprint,
 		Flow:        node.Flow,
+		Transport:   node.Transport,
+		XHTTPPath:   node.XHTTPPath,
+		XHTTPHost:   node.XHTTPHost,
+		XHTTPMode:   node.XHTTPMode,
 	}
+}
+
+func normalizeSubscriptionTransport(transport string) string {
+	if strings.EqualFold(strings.TrimSpace(transport), "xhttp") {
+		return "xhttp"
+	}
+	return "tcp"
+}
+
+func normalizeSubscriptionXHTTPPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/raypilot"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
+}
+
+func normalizeSubscriptionXHTTPMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "packet-up", "stream-up", "stream-one":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "auto"
+	}
+}
+
+func subscriptionFlowForNode(nc NodeConfig) string {
+	if normalizeSubscriptionTransport(nc.Transport) == "xhttp" {
+		return ""
+	}
+	flow := strings.TrimSpace(nc.Flow)
+	if flow == "" {
+		return "xtls-rprx-vision"
+	}
+	return flow
 }
 
 func allowsDirectLine(lineMode string) bool {
@@ -324,25 +371,37 @@ func (g *Generator) GeneratePlainURI(nodes []NodeConfig) string {
 // generateClashYAML 生成 Clash/mihomo 格式的 YAML 配置。
 func (g *Generator) generateClashYAML(nodes []NodeConfig) string {
 	proxies := make([]map[string]interface{}, 0, len(nodes))
-	for i, nc := range nodes {
+	for _, nc := range nodes {
+		transport := normalizeSubscriptionTransport(nc.Transport)
 		proxy := map[string]interface{}{
 			"name":               nc.Name,
 			"type":               "vless",
 			"server":             nc.Server,
 			"port":               nc.Port,
 			"uuid":               nc.UUID,
-			"network":            "tcp",
+			"network":            transport,
 			"udp":                true,
 			"tls":                true,
 			"servername":         nc.ServerName,
-			"flow":               nc.Flow,
 			"client-fingerprint": nc.Fingerprint,
 			"reality-opts": map[string]string{
 				"public-key": nc.PublicKey,
 				"short-id":   nc.ShortID,
 			},
 		}
-		_ = i
+		if flow := subscriptionFlowForNode(nc); flow != "" {
+			proxy["flow"] = flow
+		}
+		if transport == "xhttp" {
+			xhttpOpts := map[string]string{
+				"path": normalizeSubscriptionXHTTPPath(nc.XHTTPPath),
+				"mode": normalizeSubscriptionXHTTPMode(nc.XHTTPMode),
+			}
+			if host := strings.TrimSpace(nc.XHTTPHost); host != "" {
+				xhttpOpts["host"] = host
+			}
+			proxy["xhttp-opts"] = xhttpOpts
+		}
 		proxies = append(proxies, proxy)
 	}
 
@@ -391,17 +450,31 @@ func (g *Generator) generateClashYAML(nodes []NodeConfig) string {
 func (g *Generator) generatePlainURI(nodes []NodeConfig) string {
 	var lines []string
 	for _, nc := range nodes {
-		// VLESS URI 格式：vless://uuid@server:port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=SERVER_NAME&pbk=PUBLIC_KEY&sid=SHORT_ID&fp=FINGERPRINT&type=tcp#NAME
-		uri := fmt.Sprintf("vless://%s@%s:%d?encryption=none&flow=%s&security=reality&sni=%s&pbk=%s&sid=%s&fp=%s&type=tcp#%s",
+		transport := normalizeSubscriptionTransport(nc.Transport)
+		query := url.Values{}
+		query.Set("encryption", "none")
+		query.Set("security", "reality")
+		query.Set("sni", nc.ServerName)
+		query.Set("pbk", nc.PublicKey)
+		query.Set("sid", nc.ShortID)
+		query.Set("fp", nc.Fingerprint)
+		query.Set("type", transport)
+		if flow := subscriptionFlowForNode(nc); flow != "" {
+			query.Set("flow", flow)
+		}
+		if transport == "xhttp" {
+			query.Set("path", normalizeSubscriptionXHTTPPath(nc.XHTTPPath))
+			query.Set("mode", normalizeSubscriptionXHTTPMode(nc.XHTTPMode))
+			if host := strings.TrimSpace(nc.XHTTPHost); host != "" {
+				query.Set("host", host)
+			}
+		}
+		uri := fmt.Sprintf("vless://%s@%s:%d?%s#%s",
 			nc.UUID,
 			nc.Server,
 			nc.Port,
-			nc.Flow,
-			nc.ServerName,
-			nc.PublicKey,
-			nc.ShortID,
-			nc.Fingerprint,
-			nc.Name,
+			query.Encode(),
+			url.PathEscape(nc.Name),
 		)
 		lines = append(lines, uri)
 	}

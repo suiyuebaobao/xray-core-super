@@ -51,6 +51,10 @@ type DeployRequest struct {
 	CenterURL      string   `json:"center_url" binding:"required"`
 	NodeToken      string   `json:"node_token"`
 	NodeName       string   `json:"node_name"`
+	Transport      string   `json:"transport"`
+	XHTTPPath      string   `json:"xhttp_path"`
+	XHTTPHost      string   `json:"xhttp_host"`
+	XHTTPMode      string   `json:"xhttp_mode"`
 	MultiIPEnabled bool     `json:"multi_ip_enabled"`
 	SelectedIPs    []string `json:"selected_ips"`
 }
@@ -112,13 +116,60 @@ type MultiExitNodeConfig struct {
 	NodeID            uint64 `json:"node_id"`
 	IP                string `json:"ip"`
 	Port              uint32 `json:"port"`
+	Transport         string `json:"transport"`
+	XHTTPPath         string `json:"xhttp_path,omitempty"`
+	XHTTPHost         string `json:"xhttp_host,omitempty"`
+	XHTTPMode         string `json:"xhttp_mode,omitempty"`
 	InboundTag        string `json:"inbound_tag"`
 	OutboundTag       string `json:"outbound_tag"`
 	XrayUserKeyPrefix string `json:"xray_user_key_prefix"`
 }
 
+func normalizeDeployTransport(req *DeployRequest) {
+	req.Transport = normalizeTransport(req.Transport)
+	req.XHTTPHost = strings.TrimSpace(req.XHTTPHost)
+	req.XHTTPMode = normalizeXHTTPMode(req.XHTTPMode)
+	if req.Transport == "xhttp" {
+		req.XHTTPPath = normalizeXHTTPPath(req.XHTTPPath)
+		return
+	}
+	req.XHTTPPath = ""
+	req.XHTTPHost = ""
+	req.XHTTPMode = "auto"
+}
+
+func normalizeTransport(transport string) string {
+	switch strings.ToLower(strings.TrimSpace(transport)) {
+	case "xhttp":
+		return "xhttp"
+	default:
+		return "tcp"
+	}
+}
+
+func normalizeXHTTPPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/raypilot"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
+}
+
+func normalizeXHTTPMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "packet-up", "stream-up", "stream-one":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "auto"
+	}
+}
+
 // Deploy 一键部署节点。
 func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*DeployResult, error) {
+	normalizeDeployTransport(req)
 	if req.MultiIPEnabled {
 		return s.deployMultiIP(ctx, req)
 	}
@@ -217,13 +268,21 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 	node := &model.Node{
 		Name:           nodeName,
 		Protocol:       "vless",
+		Transport:      req.Transport,
 		Host:           req.SSHHost,
 		Port:           443,
 		ServerName:     "www.microsoft.com",
+		Flow:           "xtls-rprx-vision",
 		LineMode:       "direct_and_relay",
+		XHTTPPath:      req.XHTTPPath,
+		XHTTPHost:      req.XHTTPHost,
+		XHTTPMode:      req.XHTTPMode,
 		AgentBaseURL:   fmt.Sprintf("http://%s:8080", req.SSHHost),
 		AgentTokenHash: hex.EncodeToString(hash[:]),
 		IsEnabled:      true,
+	}
+	if node.Transport == "xhttp" {
+		node.Flow = ""
 	}
 	node, err := s.nodeRepo.Create(ctx, node)
 	if err != nil {
@@ -235,7 +294,7 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 
 	// Step 6: 启动容器（传入节点 ID）
 	addStep("启动容器", "running", "启动 node-agent 容器")
-	if err := s.startContainer(sshClient, req.CenterURL, node.ID, nodeToken); err != nil {
+	if err := s.startContainer(sshClient, req.CenterURL, node, nodeToken); err != nil {
 		addStep("启动容器", "failed", err.Error())
 		return fail("容器启动失败: %w", err)
 	}
@@ -446,10 +505,15 @@ func (s *NodeDeployService) deployMultiIP(ctx context.Context, req *DeployReques
 		node := &model.Node{
 			Name:           nodeName,
 			Protocol:       "vless",
+			Transport:      req.Transport,
 			Host:           ip,
 			Port:           443,
 			ServerName:     "www.microsoft.com",
+			Flow:           "xtls-rprx-vision",
 			LineMode:       "direct_and_relay",
+			XHTTPPath:      req.XHTTPPath,
+			XHTTPHost:      req.XHTTPHost,
+			XHTTPMode:      req.XHTTPMode,
 			NodeHostID:     &nodeHost.ID,
 			ListenIP:       ip,
 			OutboundIP:     ip,
@@ -457,6 +521,9 @@ func (s *NodeDeployService) deployMultiIP(ctx context.Context, req *DeployReques
 			AgentTokenHash: tokenHash,
 			IsEnabled:      true,
 			SortWeight:     i,
+		}
+		if node.Transport == "xhttp" {
+			node.Flow = ""
 		}
 		node, err = s.nodeRepo.Create(ctx, node)
 		if err != nil {
@@ -474,6 +541,10 @@ func (s *NodeDeployService) deployMultiIP(ctx context.Context, req *DeployReques
 			NodeID:            node.ID,
 			IP:                ip,
 			Port:              node.Port,
+			Transport:         node.Transport,
+			XHTTPPath:         node.XHTTPPath,
+			XHTTPHost:         node.XHTTPHost,
+			XHTTPMode:         node.XHTTPMode,
 			InboundTag:        node.XrayInboundTag,
 			OutboundTag:       node.XrayOutboundTag,
 			XrayUserKeyPrefix: fmt.Sprintf("node_%d__", node.ID),
@@ -588,7 +659,7 @@ func (s *NodeDeployService) cleanupLegacyNodeAgent(client *ssh.Client) error {
 	return nil
 }
 
-func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string, nodeID uint64, nodeToken string) error {
+func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string, node *model.Node, nodeToken string) error {
 	containerName := "raypilot-node-agent"
 
 	// 先停止并删除同名容器和旧品牌容器（如果存在）
@@ -600,11 +671,15 @@ func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string,
 		-e CENTER_SERVER_URL=%s \
 		-e NODE_ID=%d \
 		-e NODE_TOKEN=%s \
+		-e NODE_TRANSPORT=%s \
+		-e XHTTP_PATH=%s \
+		-e XHTTP_HOST=%s \
+		-e XHTTP_MODE=%s \
 		-e XRAY_BINARY=/usr/local/bin/xray \
 		-e XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json \
 		-e XRAY_API_SERVER=127.0.0.1:10085 \
 		-v /usr/local/etc/xray:/usr/local/etc/xray:rw \
-		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), nodeID, shellQuote(nodeToken))
+		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), node.ID, shellQuote(nodeToken), shellQuote(node.Transport), shellQuote(node.XHTTPPath), shellQuote(node.XHTTPHost), shellQuote(node.XHTTPMode))
 
 	out, err := client.Exec(cmd)
 	if err != nil {
@@ -702,6 +777,9 @@ func (s *NodeDeployService) syncRealityConfig(ctx context.Context, client *ssh.C
 	if node.Flow == "" {
 		node.Flow = "xtls-rprx-vision"
 	}
+	if node.Transport == "xhttp" {
+		node.Flow = ""
+	}
 	return s.nodeRepo.Update(ctx, node)
 }
 
@@ -739,6 +817,9 @@ func (s *NodeDeployService) syncRealityConfigForNodeIDs(ctx context.Context, cli
 		}
 		if node.Flow == "" {
 			node.Flow = "xtls-rprx-vision"
+		}
+		if node.Transport == "xhttp" {
+			node.Flow = ""
 		}
 		if err := s.nodeRepo.Update(ctx, node); err != nil {
 			return err

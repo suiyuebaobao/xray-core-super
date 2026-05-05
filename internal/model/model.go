@@ -250,6 +250,7 @@ type Node struct {
 	ID                   uint64     `gorm:"primaryKey;column:id" json:"id"`
 	Name                 string     `gorm:"column:name;type:varchar(128)" json:"name"`
 	Protocol             string     `gorm:"column:protocol;type:varchar(32);default:vless" json:"protocol"`
+	Transport            string     `gorm:"column:transport;type:varchar(32);default:tcp" json:"transport"`
 	Host                 string     `gorm:"column:host;type:varchar(255)" json:"host"`
 	Port                 uint32     `gorm:"column:port;default:443" json:"port"`
 	ServerName           string     `gorm:"column:server_name;type:varchar(255)" json:"server_name"`
@@ -258,6 +259,9 @@ type Node struct {
 	Fingerprint          string     `gorm:"column:fingerprint;type:varchar(32);default:chrome" json:"fingerprint"`
 	Flow                 string     `gorm:"column:flow;type:varchar(32);default:xtls-rprx-vision" json:"flow"`
 	LineMode             string     `gorm:"column:line_mode;type:varchar(32);default:direct_and_relay" json:"line_mode"`
+	XHTTPPath            string     `gorm:"column:xhttp_path;type:varchar(255)" json:"xhttp_path"`
+	XHTTPHost            string     `gorm:"column:xhttp_host;type:varchar(255)" json:"xhttp_host"`
+	XHTTPMode            string     `gorm:"column:xhttp_mode;type:varchar(32);default:auto" json:"xhttp_mode"`
 	NodeHostID           *uint64    `gorm:"column:node_host_id;index" json:"node_host_id,omitempty"`
 	ListenIP             string     `gorm:"column:listen_ip;type:varchar(45)" json:"listen_ip"`
 	OutboundIP           string     `gorm:"column:outbound_ip;type:varchar(45)" json:"outbound_ip"`
@@ -289,6 +293,7 @@ func (Node) TableName() string {
 type CreateNodeRequest struct {
 	Name         string `json:"name" binding:"required"`
 	Protocol     string `json:"protocol" default:"vless"`
+	Transport    string `json:"transport" binding:"omitempty,oneof=tcp xhttp"`
 	Host         string `json:"host" binding:"required"`
 	Port         uint32 `json:"port" default:"443"`
 	ServerName   string `json:"server_name"`
@@ -297,6 +302,9 @@ type CreateNodeRequest struct {
 	Fingerprint  string `json:"fingerprint" default:"chrome"`
 	Flow         string `json:"flow" default:"xtls-rprx-vision"`
 	LineMode     string `json:"line_mode" binding:"omitempty,oneof=direct_only relay_only direct_and_relay"`
+	XHTTPPath    string `json:"xhttp_path"`
+	XHTTPHost    string `json:"xhttp_host"`
+	XHTTPMode    string `json:"xhttp_mode" binding:"omitempty,oneof=auto packet-up stream-up stream-one"`
 	AgentBaseURL string `json:"agent_base_url" binding:"required"`
 	AgentToken   string `json:"agent_token" binding:"required"`
 	SortWeight   int    `json:"sort_weight"`
@@ -307,6 +315,7 @@ type CreateNodeRequest struct {
 type UpdateNodeRequest struct {
 	Name         string `json:"name" binding:"required"`
 	Protocol     string `json:"protocol"`
+	Transport    string `json:"transport" binding:"omitempty,oneof=tcp xhttp"`
 	Host         string `json:"host" binding:"required"`
 	Port         uint32 `json:"port"`
 	ServerName   string `json:"server_name"`
@@ -315,6 +324,9 @@ type UpdateNodeRequest struct {
 	Fingerprint  string `json:"fingerprint"`
 	Flow         string `json:"flow"`
 	LineMode     string `json:"line_mode" binding:"omitempty,oneof=direct_only relay_only direct_and_relay"`
+	XHTTPPath    string `json:"xhttp_path"`
+	XHTTPHost    string `json:"xhttp_host"`
+	XHTTPMode    string `json:"xhttp_mode" binding:"omitempty,oneof=auto packet-up stream-up stream-one"`
 	AgentBaseURL string `json:"agent_base_url" binding:"required"`
 	AgentToken   string `json:"agent_token"`
 	SortWeight   int    `json:"sort_weight"`

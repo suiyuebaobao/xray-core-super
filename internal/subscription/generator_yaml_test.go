@@ -8,6 +8,7 @@ import (
 	"suiyue/internal/subscription"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
 
@@ -83,6 +84,47 @@ func TestGenerator_ClashYAML_ProxyStructure(t *testing.T) {
 	realityOpts := proxy["reality-opts"].(map[string]interface{})
 	assert.Equal(t, "test-pubkey", realityOpts["public-key"])
 	assert.Equal(t, "test-sid", realityOpts["short-id"])
+}
+
+func TestGenerator_ClashYAML_XHTTPProxyStructure(t *testing.T) {
+	_, gen := setupSubTestDB(t)
+
+	nodes := []subscription.NodeConfig{
+		{
+			Name:        "XHTTP-01",
+			Server:      "xhttp.example.com",
+			Port:        443,
+			UUID:        "uuid-xhttp",
+			ServerName:  "www.microsoft.com",
+			PublicKey:   "xhttp-pubkey",
+			ShortID:     "xhttp-sid",
+			Fingerprint: "chrome",
+			Transport:   "xhttp",
+			XHTTPPath:   "raypilot-xhttp",
+			XHTTPHost:   "cdn.example.com",
+			XHTTPMode:   "stream-up",
+			Flow:        "xtls-rprx-vision",
+		},
+	}
+
+	yamlContent := gen.GenerateClashYAML(nodes)
+
+	var config map[string]interface{}
+	require.NoError(t, yaml.Unmarshal([]byte(yamlContent), &config))
+	proxy := config["proxies"].([]interface{})[0].(map[string]interface{})
+	assert.Equal(t, "xhttp", proxy["network"])
+	assert.NotContains(t, proxy, "flow")
+	xhttpOpts := proxy["xhttp-opts"].(map[string]interface{})
+	assert.Equal(t, "/raypilot-xhttp", xhttpOpts["path"])
+	assert.Equal(t, "stream-up", xhttpOpts["mode"])
+	assert.Equal(t, "cdn.example.com", xhttpOpts["host"])
+
+	uriContent := gen.GeneratePlainURI(nodes)
+	assert.Contains(t, uriContent, "type=xhttp")
+	assert.Contains(t, uriContent, "path=%2Fraypilot-xhttp")
+	assert.Contains(t, uriContent, "mode=stream-up")
+	assert.Contains(t, uriContent, "host=cdn.example.com")
+	assert.NotContains(t, uriContent, "flow=")
 }
 
 // TestGenerator_ClashYAML_MultipleNodes 测试多节点生成。

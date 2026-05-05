@@ -85,6 +85,10 @@ type Config struct {
 	AgentRole         string // exit 或 relay
 	NodeID            uint64 // 节点 ID
 	NodeToken         string // 节点鉴权 Token（明文传输，服务端只保存哈希）
+	NodeTransport     string // 单出口节点传输层：tcp 或 xhttp
+	XHTTPPath         string // XHTTP 请求路径
+	XHTTPHost         string // XHTTP Host
+	XHTTPMode         string // XHTTP 模式
 	NodeHostID        uint64 // 物理节点服务器 ID（multi_exit 模式）
 	NodeHostToken     string // 物理节点服务器 Token（multi_exit 模式）
 	MultiNodes        []MultiExitNodeConfig
@@ -140,6 +144,10 @@ func loadConfig() *Config {
 			log.Fatal("[agent] NODE_TOKEN is required")
 		}
 		cfg.NodeToken = plainToken
+		cfg.NodeTransport = normalizeAgentTransport(getEnv("NODE_TRANSPORT", "tcp"))
+		cfg.XHTTPPath = normalizeAgentXHTTPPath(getEnv("XHTTP_PATH", ""))
+		cfg.XHTTPHost = strings.TrimSpace(getEnv("XHTTP_HOST", ""))
+		cfg.XHTTPMode = normalizeAgentXHTTPMode(getEnv("XHTTP_MODE", ""))
 	case "multi_exit":
 		cfg.NodeHostID = getUint64Env("NODE_HOST_ID", 0)
 		if cfg.NodeHostID == 0 {
@@ -217,6 +225,10 @@ func loadMultiNodeConfig() ([]MultiExitNodeConfig, error) {
 		if nodes[i].Port > 65535 {
 			return nil, fmt.Errorf("invalid node port for node %d: %d", nodes[i].NodeID, nodes[i].Port)
 		}
+		nodes[i].Transport = normalizeAgentTransport(nodes[i].Transport)
+		nodes[i].XHTTPPath = normalizeAgentXHTTPPath(nodes[i].XHTTPPath)
+		nodes[i].XHTTPHost = strings.TrimSpace(nodes[i].XHTTPHost)
+		nodes[i].XHTTPMode = normalizeAgentXHTTPMode(nodes[i].XHTTPMode)
 		if nodes[i].InboundTag == "" {
 			nodes[i].InboundTag = fmt.Sprintf("node_%d_in", nodes[i].NodeID)
 		}
@@ -230,11 +242,44 @@ func loadMultiNodeConfig() ([]MultiExitNodeConfig, error) {
 	return nodes, nil
 }
 
+func normalizeAgentTransport(transport string) string {
+	switch strings.ToLower(strings.TrimSpace(transport)) {
+	case "xhttp":
+		return "xhttp"
+	default:
+		return "tcp"
+	}
+}
+
+func normalizeAgentXHTTPPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/raypilot"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
+}
+
+func normalizeAgentXHTTPMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "packet-up", "stream-up", "stream-one":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "auto"
+	}
+}
+
 // MultiExitNodeConfig 是 multi_exit 模式下一个逻辑出口节点的本地配置。
 type MultiExitNodeConfig struct {
 	NodeID            uint64 `json:"node_id"`
 	IP                string `json:"ip"`
 	Port              uint32 `json:"port"`
+	Transport         string `json:"transport"`
+	XHTTPPath         string `json:"xhttp_path,omitempty"`
+	XHTTPHost         string `json:"xhttp_host,omitempty"`
+	XHTTPMode         string `json:"xhttp_mode,omitempty"`
 	InboundTag        string `json:"inbound_tag"`
 	OutboundTag       string `json:"outbound_tag"`
 	XrayUserKeyPrefix string `json:"xray_user_key_prefix"`
@@ -673,93 +718,25 @@ func (a *Agent) generateDefaultXrayConfig() error {
 		return fmt.Errorf("failed to parse x25519 keys")
 	}
 
-	config := fmt.Sprintf(`{
-  "log": {
-    "loglevel": "warning"
-  },
-  "api": {
-    "tag": "api",
-    "services": ["StatsService"]
-  },
-  "stats": {},
-  "policy": {
-    "levels": {
-      "0": {
-        "statsUserUplink": true,
-        "statsUserDownlink": true
-      }
-    },
-    "system": {
-      "statsInboundUplink": true,
-      "statsInboundDownlink": true,
-      "statsOutboundUplink": true,
-      "statsOutboundDownlink": true
-    }
-  },
-  "routing": {
-    "domainStrategy": "AsIs",
-    "rules": [
-      {
-        "type": "field",
-        "inboundTag": ["api"],
-        "outboundTag": "api"
-      },
-      {
-        "type": "field",
-        "outboundTag": "blocked",
-        "protocol": ["bittorrent"]
-      }
-    ]
-  },
-  "inbounds": [
-    {
-      "tag": "api",
-      "listen": "127.0.0.1",
-      "port": 10085,
-      "protocol": "dokodemo-door",
-      "settings": {
-        "address": "127.0.0.1"
-      }
-    },
-    {
-      "protocol": "vless",
-      "port": 443,
-      "listen": "0.0.0.0",
-      "settings": {
-        "clients": [],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "dest": "www.microsoft.com:443",
-          "serverNames": ["www.microsoft.com"],
-          "privateKey": "%s",
-          "publicKey": "%s",
-          "shortIds": [""]
-        }
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": ["http", "tls"]
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    },
-    {
-      "protocol": "blackhole",
-      "tag": "blocked"
-    }
-  ]
-}`, privateKey, publicKey)
+	reality := multiExitReality{ServerName: "www.microsoft.com", PublicKey: strings.TrimSpace(publicKey), PrivateKey: strings.TrimSpace(privateKey)}
+	node := MultiExitNodeConfig{
+		NodeID:     a.cfg.NodeID,
+		IP:         "0.0.0.0",
+		Port:       443,
+		Transport:  a.cfg.NodeTransport,
+		XHTTPPath:  a.cfg.XHTTPPath,
+		XHTTPHost:  a.cfg.XHTTPHost,
+		XHTTPMode:  a.cfg.XHTTPMode,
+		InboundTag: "",
+	}
+	cfg := buildExitXrayConfigMap(node, reality, []interface{}{}, a.cfg.XrayAPIServer)
+	configData, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal xray config: %w", err)
+	}
 
 	os.MkdirAll(filepath.Dir(a.cfg.XrayConfigPath), 0755)
-	return os.WriteFile(a.cfg.XrayConfigPath, []byte(config), 0644)
+	return os.WriteFile(a.cfg.XrayConfigPath, configData, 0644)
 }
 
 type multiExitReality struct {
@@ -891,7 +868,19 @@ func extractVLESSClientsByInboundTag(rawCfg map[string]interface{}) map[string][
 	return result
 }
 
+func buildExitXrayConfigMap(node MultiExitNodeConfig, reality multiExitReality, clients []interface{}, apiServer string) map[string]interface{} {
+	if node.InboundTag == "" {
+		node.InboundTag = "vless-in"
+	}
+	node.OutboundTag = "direct"
+	return buildXrayConfigMap([]MultiExitNodeConfig{node}, reality, map[string][]interface{}{node.InboundTag: clients}, apiServer)
+}
+
 func buildMultiExitXrayConfigMap(nodes []MultiExitNodeConfig, reality multiExitReality, clientsByTag map[string][]interface{}, apiServer string) map[string]interface{} {
+	return buildXrayConfigMap(nodes, reality, clientsByTag, apiServer)
+}
+
+func buildXrayConfigMap(nodes []MultiExitNodeConfig, reality multiExitReality, clientsByTag map[string][]interface{}, apiServer string) map[string]interface{} {
 	listenHost, listenPort, err := parseXrayAPIServer(apiServer)
 	if err != nil {
 		listenHost, listenPort = "127.0.0.1", 10085
@@ -914,6 +903,12 @@ func buildMultiExitXrayConfigMap(nodes []MultiExitNodeConfig, reality multiExitR
 	}
 
 	for _, node := range nodes {
+		if node.InboundTag == "" {
+			node.InboundTag = "vless-in"
+		}
+		if node.OutboundTag == "" {
+			node.OutboundTag = "direct"
+		}
 		port := node.Port
 		if port == 0 {
 			port = 443
@@ -922,6 +917,14 @@ func buildMultiExitXrayConfigMap(nodes []MultiExitNodeConfig, reality multiExitR
 		if clients == nil {
 			clients = []interface{}{}
 		}
+		outbound := map[string]interface{}{
+			"tag":      node.OutboundTag,
+			"protocol": "freedom",
+		}
+		if ip := strings.TrimSpace(node.IP); ip != "" && ip != "0.0.0.0" && ip != "::" {
+			outbound["sendThrough"] = ip
+		}
+		streamSettings := buildRealityStreamSettings(node, reality)
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag":      node.InboundTag,
 			"listen":   node.IP,
@@ -931,27 +934,13 @@ func buildMultiExitXrayConfigMap(nodes []MultiExitNodeConfig, reality multiExitR
 				"clients":    clients,
 				"decryption": "none",
 			},
-			"streamSettings": map[string]interface{}{
-				"network":  "tcp",
-				"security": "reality",
-				"realitySettings": map[string]interface{}{
-					"dest":        reality.ServerName + ":443",
-					"serverNames": []interface{}{reality.ServerName},
-					"privateKey":  reality.PrivateKey,
-					"publicKey":   reality.PublicKey,
-					"shortIds":    []interface{}{reality.ShortID},
-				},
-			},
+			"streamSettings": streamSettings,
 			"sniffing": map[string]interface{}{
 				"enabled":      true,
 				"destOverride": []interface{}{"http", "tls"},
 			},
 		})
-		outbounds = append(outbounds, map[string]interface{}{
-			"tag":         node.OutboundTag,
-			"protocol":    "freedom",
-			"sendThrough": node.IP,
-		})
+		outbounds = append(outbounds, outbound)
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
 			"inboundTag":  []interface{}{node.InboundTag},
@@ -971,6 +960,32 @@ func buildMultiExitXrayConfigMap(nodes []MultiExitNodeConfig, reality multiExitR
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
 	}
+}
+
+func buildRealityStreamSettings(node MultiExitNodeConfig, reality multiExitReality) map[string]interface{} {
+	transport := normalizeAgentTransport(node.Transport)
+	settings := map[string]interface{}{
+		"network":  transport,
+		"security": "reality",
+		"realitySettings": map[string]interface{}{
+			"dest":        reality.ServerName + ":443",
+			"serverNames": []interface{}{reality.ServerName},
+			"privateKey":  reality.PrivateKey,
+			"publicKey":   reality.PublicKey,
+			"shortIds":    []interface{}{reality.ShortID},
+		},
+	}
+	if transport == "xhttp" {
+		xhttpSettings := map[string]interface{}{
+			"path": normalizeAgentXHTTPPath(node.XHTTPPath),
+			"mode": normalizeAgentXHTTPMode(node.XHTTPMode),
+		}
+		if host := strings.TrimSpace(node.XHTTPHost); host != "" {
+			xhttpSettings["host"] = host
+		}
+		settings["xhttpSettings"] = xhttpSettings
+	}
+	return settings
 }
 
 func (a *Agent) ensureXrayStatsConfig() error {
@@ -1782,12 +1797,15 @@ func (a *Agent) handleUpsertUser(payload string) string {
 		XrayUserKey string `json:"xray_user_key"`
 		UUID        string `json:"uuid"`
 		Flow        string `json:"flow"`
+		Transport   string `json:"transport"`
 	}
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
 		return fmt.Sprintf("invalid payload: %v", err)
 	}
 
-	if p.Flow == "" {
+	if normalizeAgentTransport(p.Transport) == "xhttp" {
+		p.Flow = ""
+	} else if p.Flow == "" {
 		p.Flow = "xtls-rprx-vision"
 	}
 
@@ -1810,6 +1828,7 @@ func (a *Agent) handleMultiUpsertUser(nodeID uint64, payload string) string {
 		XrayUserKey string `json:"xray_user_key"`
 		UUID        string `json:"uuid"`
 		Flow        string `json:"flow"`
+		Transport   string `json:"transport"`
 	}
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
 		return fmt.Sprintf("invalid payload: %v", err)
@@ -1818,7 +1837,13 @@ func (a *Agent) handleMultiUpsertUser(nodeID uint64, payload string) string {
 	if !ok {
 		return fmt.Sprintf("unknown managed node_id: %d", nodeID)
 	}
-	if p.Flow == "" {
+	transport := p.Transport
+	if transport == "" {
+		transport = node.Transport
+	}
+	if normalizeAgentTransport(transport) == "xhttp" {
+		p.Flow = ""
+	} else if p.Flow == "" {
 		p.Flow = "xtls-rprx-vision"
 	}
 	localKey := node.localXrayUserKey(p.XrayUserKey)
@@ -1919,7 +1944,11 @@ func (a *Agent) addVLESSClientToInbound(inboundTag, uuid, email, flow string) er
 		}
 		if cMap["email"] == email {
 			cMap["id"] = uuid
-			cMap["flow"] = flow
+			if strings.TrimSpace(flow) == "" {
+				delete(cMap, "flow")
+			} else {
+				cMap["flow"] = flow
+			}
 			clientsRaw[i] = cMap
 			found = true
 			break
@@ -1927,11 +1956,14 @@ func (a *Agent) addVLESSClientToInbound(inboundTag, uuid, email, flow string) er
 	}
 
 	if !found {
-		clientsRaw = append(clientsRaw, map[string]interface{}{
+		client := map[string]interface{}{
 			"id":    uuid,
-			"flow":  flow,
 			"email": email,
-		})
+		}
+		if strings.TrimSpace(flow) != "" {
+			client["flow"] = flow
+		}
+		clientsRaw = append(clientsRaw, client)
 	}
 
 	settingsRaw["clients"] = clientsRaw

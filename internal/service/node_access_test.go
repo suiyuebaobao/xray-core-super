@@ -9,6 +9,7 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"suiyue/internal/config"
@@ -44,9 +45,9 @@ func setupNodeAccessTest(t *testing.T) (*gorm.DB, *service.NodeAccessService) {
 	db.Exec("CREATE TABLE IF NOT EXISTS plan_node_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER, node_group_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
 
 	cfg := &config.Config{
-		JWTSecret:           "test-secret",
-		JWTExpiresIn:        24 * 60 * 60,
-		TaskRetryLimit:      10,
+		JWTSecret:      "test-secret",
+		JWTExpiresIn:   24 * 60 * 60,
+		TaskRetryLimit: 10,
 	}
 
 	taskRepo := repository.NewNodeAccessTaskRepository(db)
@@ -126,6 +127,40 @@ func TestNodeAccessService_TriggerOnSubscribe(t *testing.T) {
 	assert.GreaterOrEqual(t, taskCount, int64(1))
 }
 
+func TestNodeAccessService_TriggerOnSubscribe_XHTTPPayloadOmitsFlow(t *testing.T) {
+	db, svc := setupNodeAccessTest(t)
+	ctx := context.Background()
+
+	nodeGroup := &model.NodeGroup{Name: "xhttp-group"}
+	require.NoError(t, db.Create(nodeGroup).Error)
+	node := &model.Node{
+		Name: "xhttp-node", Protocol: "vless", Transport: "xhttp",
+		Host: "xhttp.node.test", Port: 443, ServerName: "www.microsoft.com",
+		AgentBaseURL: "http://node:8080", AgentTokenHash: "hash",
+		NodeGroupID: &nodeGroup.ID, IsEnabled: true,
+	}
+	require.NoError(t, db.Create(node).Error)
+	plan := &model.Plan{Name: "xhttp-plan", Price: 10, DurationDays: 30, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	require.NoError(t, db.Exec("INSERT INTO plan_node_groups (plan_id, node_group_id) VALUES (?, ?)", plan.ID, nodeGroup.ID).Error)
+	sub := &model.UserSubscription{
+		UserID: 1, PlanID: plan.ID, StartDate: db.NowFunc(),
+		ExpireDate: db.NowFunc().AddDate(0, 0, 30), Status: "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+
+	require.NoError(t, svc.TriggerOnSubscribe(ctx, 1, sub.ID, plan.ID))
+
+	var task model.NodeAccessTask
+	require.NoError(t, db.Where("node_id = ? AND action = ?", node.ID, "UPSERT_USER").First(&task).Error)
+	require.NotNil(t, task.Payload)
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*task.Payload), &payload))
+	assert.Equal(t, "xhttp", payload["transport"])
+	assert.NotContains(t, payload, "flow")
+	assert.Equal(t, "default-user-uuid", payload["uuid"])
+}
+
 // TestNodeAccessService_TriggerOnExpire 测试触发订阅过期任务。
 func TestNodeAccessService_TriggerOnExpire(t *testing.T) {
 	db, svc := setupNodeAccessTest(t)
@@ -141,7 +176,7 @@ func TestNodeAccessService_TriggerOnExpire(t *testing.T) {
 	sub := &model.UserSubscription{
 		UserID: 1, PlanID: 1, StartDate: db.NowFunc(),
 		ExpireDate: db.NowFunc().AddDate(0, 0, 30),
-		Status: "ACTIVE",
+		Status:     "ACTIVE",
 	}
 	db.Create(sub)
 
@@ -319,7 +354,7 @@ func TestNodeAccessService_TriggerOnSubscribe_DuplicateTask(t *testing.T) {
 	sub := &model.UserSubscription{
 		UserID: 1, PlanID: 1, StartDate: db.NowFunc(),
 		ExpireDate: db.NowFunc().AddDate(0, 0, 30),
-		Status: "ACTIVE",
+		Status:     "ACTIVE",
 	}
 	db.Create(sub)
 

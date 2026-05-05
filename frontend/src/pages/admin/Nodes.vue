@@ -29,6 +29,11 @@
       <el-table-column prop="name" label="节点名称" />
       <el-table-column prop="host" label="地址" />
       <el-table-column prop="port" label="端口" width="70" />
+      <el-table-column prop="transport" label="传输" width="120">
+        <template #default="{ row }">
+          <el-tag effect="plain" :type="row.transport === 'xhttp' ? 'warning' : 'info'">{{ transportLabel(row.transport) }}</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="line_mode" label="线路输出" width="130">
         <template #default="{ row }">
           <el-tag effect="plain">{{ lineModeLabel(row.line_mode) }}</el-tag>
@@ -72,6 +77,28 @@
         <el-form-item label="端口" prop="port">
           <el-input-number v-model="form.port" :min="1" :max="65535" />
         </el-form-item>
+        <el-form-item label="传输模式">
+          <el-select v-model="form.transport" style="width: 100%" @change="ensureXHTTPDefaults(form)">
+            <el-option label="TCP + Reality" value="tcp" />
+            <el-option label="XHTTP + Reality" value="xhttp" />
+          </el-select>
+        </el-form-item>
+        <template v-if="form.transport === 'xhttp'">
+          <el-form-item label="XHTTP Path">
+            <el-input v-model="form.xhttp_path" placeholder="/raypilot" />
+          </el-form-item>
+          <el-form-item label="XHTTP Mode">
+            <el-select v-model="form.xhttp_mode" style="width: 100%">
+              <el-option label="auto" value="auto" />
+              <el-option label="packet-up" value="packet-up" />
+              <el-option label="stream-up" value="stream-up" />
+              <el-option label="stream-one" value="stream-one" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="XHTTP Host">
+            <el-input v-model="form.xhttp_host" placeholder="可选" />
+          </el-form-item>
+        </template>
         <el-form-item label="Server Name">
           <el-input v-model="form.server_name" placeholder="Reality SNI" />
         </el-form-item>
@@ -129,6 +156,28 @@
         <el-form-item label="节点 Token">
           <el-input v-model="deployForm.node_token" placeholder="留空自动生成" />
         </el-form-item>
+        <el-form-item label="传输模式">
+          <el-select v-model="deployForm.transport" style="width: 100%" @change="ensureXHTTPDefaults(deployForm)">
+            <el-option label="TCP + Reality" value="tcp" />
+            <el-option label="XHTTP + Reality" value="xhttp" />
+          </el-select>
+        </el-form-item>
+        <template v-if="deployForm.transport === 'xhttp'">
+          <el-form-item label="XHTTP Path">
+            <el-input v-model="deployForm.xhttp_path" placeholder="/raypilot" />
+          </el-form-item>
+          <el-form-item label="XHTTP Mode">
+            <el-select v-model="deployForm.xhttp_mode" style="width: 100%">
+              <el-option label="auto" value="auto" />
+              <el-option label="packet-up" value="packet-up" />
+              <el-option label="stream-up" value="stream-up" />
+              <el-option label="stream-one" value="stream-one" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="XHTTP Host">
+            <el-input v-model="deployForm.xhttp_host" placeholder="可选" />
+          </el-form-item>
+        </template>
         <el-form-item label="多 IP 服务器">
           <el-switch
             v-model="deployForm.multi_ip_enabled"
@@ -208,6 +257,10 @@ const form = reactive({
   name: '',
   host: '',
   port: 443,
+  transport: 'tcp',
+  xhttp_path: '/raypilot',
+  xhttp_host: '',
+  xhttp_mode: 'auto',
   server_name: '',
   public_key: '',
   short_id: '',
@@ -254,6 +307,10 @@ const deployForm = reactive({
   node_name: '',
   center_url: window.location.origin,
   node_token: '',
+  transport: 'tcp',
+  xhttp_path: '/raypilot',
+  xhttp_host: '',
+  xhttp_mode: 'auto',
   multi_ip_enabled: false,
 })
 
@@ -268,6 +325,8 @@ function showDeployDialog() {
   deploySteps.value = []
   scannedIps.value = []
   selectedDeployIps.value = []
+  if (!deployForm.transport) deployForm.transport = 'tcp'
+  ensureXHTTPDefaults(deployForm)
   deployDialogVisible.value = true
 }
 
@@ -334,6 +393,10 @@ async function handleDeploy() {
       node_name: deployForm.node_name,
       center_url: deployForm.center_url,
       node_token: deployForm.node_token,
+      transport: deployForm.transport,
+      xhttp_path: deployForm.xhttp_path,
+      xhttp_host: deployForm.xhttp_host,
+      xhttp_mode: deployForm.xhttp_mode,
       multi_ip_enabled: deployForm.multi_ip_enabled,
       selected_ips: selectedDeployIps.value.map((item) => item.ip),
     }
@@ -376,6 +439,18 @@ function lineModeLabel(mode) {
   return labels[mode] || '直连 + 中转'
 }
 
+function transportLabel(transport) {
+  return transport === 'xhttp' ? 'XHTTP' : 'TCP'
+}
+
+function ensureXHTTPDefaults(target) {
+  if (!target.transport) target.transport = 'tcp'
+  if (target.transport === 'xhttp') {
+    if (!target.xhttp_path) target.xhttp_path = '/raypilot'
+    if (!target.xhttp_mode) target.xhttp_mode = 'auto'
+  }
+}
+
 function trafficSyncTag(row) {
   if (row.last_traffic_error) return 'danger'
   if (row.last_traffic_success_at) return 'success'
@@ -392,6 +467,10 @@ function resetForm() {
   form.name = ''
   form.host = ''
   form.port = 443
+  form.transport = 'tcp'
+  form.xhttp_path = '/raypilot'
+  form.xhttp_host = ''
+  form.xhttp_mode = 'auto'
   form.server_name = ''
   form.public_key = ''
   form.short_id = ''
@@ -414,6 +493,10 @@ function showEditDialog(row) {
   form.name = row.name
   form.host = row.host
   form.port = row.port
+  form.transport = row.transport || 'tcp'
+  form.xhttp_path = row.xhttp_path || '/raypilot'
+  form.xhttp_host = row.xhttp_host || ''
+  form.xhttp_mode = row.xhttp_mode || 'auto'
   form.server_name = row.server_name || ''
   form.public_key = row.public_key || ''
   form.short_id = row.short_id || ''
@@ -434,6 +517,10 @@ async function handleSave() {
       name: form.name,
       host: form.host,
       port: form.port,
+      transport: form.transport,
+      xhttp_path: form.xhttp_path,
+      xhttp_host: form.xhttp_host,
+      xhttp_mode: form.xhttp_mode,
       server_name: form.server_name,
       public_key: form.public_key,
       short_id: form.short_id,

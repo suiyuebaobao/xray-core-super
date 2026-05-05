@@ -149,7 +149,7 @@ async function cleanupUser(request, adminToken, username, knownId) {
   }
 }
 
-async function expectSubscriptionDownload(request, url, format, nodeName) {
+async function expectSubscriptionDownload(request, url, format, nodeName, expectedTransport = 'tcp') {
   const response = await request.get(url)
   expect(response.ok(), `${format} subscription download`).toBeTruthy()
   const expectedFilename = `${subscriptionProfileName}.${format === 'clash' ? 'yaml' : 'txt'}`
@@ -158,6 +158,16 @@ async function expectSubscriptionDownload(request, url, format, nodeName) {
   const content = format === 'base64' ? Buffer.from(text, 'base64').toString('utf8') : text
   expect(content, `${format} subscription contains the test node`).toContain(nodeName)
   expect(content, `${format} subscription contains vless data`).toContain(format === 'clash' ? 'vless' : 'vless://')
+  if (expectedTransport === 'xhttp') {
+    if (format === 'plain' || format === 'base64') {
+      expect(content, `${format} subscription uses xhttp URI type`).toContain('type=xhttp')
+      expect(content, `${format} subscription omits vision flow for xhttp`).not.toContain('flow=')
+    } else {
+      expect(content, `${format} subscription uses xhttp network`).toContain('network: xhttp')
+      expect(content, `${format} subscription includes xhttp opts`).toContain('xhttp-opts:')
+      expect(content, `${format} subscription omits vision flow for xhttp`).not.toContain('flow:')
+    }
+  }
 }
 
 async function getSelectedSubscriptionUrl(page) {
@@ -211,11 +221,14 @@ test('real user flows cover signup, plans, orders, redeem, subscriptions, profil
         protocol: 'vless',
         host: '203.0.113.88',
         port: 24488,
+        transport: 'xhttp',
+        xhttp_path: '/real-user-xhttp',
+        xhttp_mode: 'stream-up',
+        xhttp_host: 'cdn.example.test',
         server_name: 'www.microsoft.com',
         public_key: 'E2ERealUserPublicKey123456789012345678901234',
         short_id: '8a8b8c8d',
         fingerprint: 'chrome',
-        flow: 'xtls-rprx-vision',
         line_mode: 'direct_only',
         agent_base_url: 'http://203.0.113.88:18080',
         agent_token: `agent-token-${suffix}`,
@@ -372,9 +385,9 @@ test('real user flows cover signup, plans, orders, redeem, subscriptions, profil
 
     const aLinkText = await pageA.locator('.subscription-page .link-url').textContent()
     expect(aLinkText.includes(subscriptionB.tokens[0]), 'user A page must not expose user B subscription token').toBe(false)
-    await expectSubscriptionDownload(contextA.request, clashUrl, 'clash', node.name)
-    await expectSubscriptionDownload(contextA.request, base64Url, 'base64', node.name)
-    await expectSubscriptionDownload(contextA.request, plainUrl, 'plain', node.name)
+    await expectSubscriptionDownload(contextA.request, clashUrl, 'clash', node.name, 'xhttp')
+    await expectSubscriptionDownload(contextA.request, base64Url, 'base64', node.name, 'xhttp')
+    await expectSubscriptionDownload(contextA.request, plainUrl, 'plain', node.name, 'xhttp')
 
     await pageA.goto('/profile')
     await pageA.waitForLoadState('networkidle')

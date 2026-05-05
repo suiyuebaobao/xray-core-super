@@ -96,6 +96,48 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - 修改其中任意一个规则文件时，必须同步检查并更新另外两个规则文件，确保关键约束、流程和口径一致。
 - 若某条规则只适用于特定工具或 agent，应在三份文件中明确适用范围，避免互相冲突。
 
+## 测试节点信息
+
+已有多台真实节点服务器用于联调测试。三份规则文件必须同步维护本节；SSH 密码、节点 Token、订阅 Token、JWT、数据库连接串和 Reality 私钥不得提交到 GitHub，公开仓库只保留 `[REDACTED]`。
+
+**节点 1**
+
+| 项目 | 值 |
+|------|-----|
+| 节点 IP | `154.219.97.219` |
+| SSH 用户 | `root` |
+| SSH 密码 | `[REDACTED]` |
+| 系统 | Ubuntu 22.04, 2GB RAM, 30GB 磁盘 |
+| xray-core | v26.3.27（已安装） |
+| xray 配置 | `/usr/local/etc/xray/config.json` |
+| 协议 | VLESS + Reality + TCP，端口 443 |
+| Reality SNI | `www.microsoft.com` |
+| Reality PublicKey | `Ptge2dO56Lr_sBjn1I05SVhxew3mq6tvGN5JxdG3Plg` |
+| node-agent | 已部署为 systemd 服务，10 秒心跳 |
+| 中心服务地址 | `[REDACTED]` |
+| Node Token | `[REDACTED]` |
+
+**节点 2**
+
+| 项目 | 值 |
+|------|-----|
+| 节点 IP | `154.219.106.105` |
+| 出口 IP | `154.219.106.105`, `154.219.106.53` |
+| SSH 用户 | `root` |
+| SSH 密码 | `[REDACTED]` |
+| xray-core | v26.3.27（已安装） |
+| xray 配置 | `/usr/local/etc/xray/config.json` |
+| 协议 | VLESS + Reality + TCP，端口 443，每个出口 IP 独立 inbound/outbound |
+| Reality SNI | `www.microsoft.com` |
+| Reality PublicKey | `zCFojnBF8PNYGYWgHWTynGvPVgp-14G9ttU9rxLD7HE` |
+| node-agent | `raypilot-node-agent` Docker 容器，`AGENT_ROLE=multi_exit` |
+| 逻辑节点 | 当前联调记录为 `33 -> 154.219.106.105`、`34 -> 154.219.106.53` |
+| 旧代理 | systemd `node-agent` 与旧 relay agent 已清理 |
+| 中心服务地址 | `[REDACTED]` |
+| NodeHost Token | `[REDACTED]` |
+
+部署方式：一台多出口服务器只保留一个 multi_exit node-agent；旧 systemd/relay agent 不得与当前出口角色并存。
+
 ## 提交与 PR 要求
 
 当前工作区没有可用 Git 历史，因此提交信息建议使用简洁祈使句，例如 `fix subscription token validation` 或 `add redeem code expiry check`。

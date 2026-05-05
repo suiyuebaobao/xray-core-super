@@ -194,7 +194,7 @@ JWT 双 Token：
 
 ### 测试节点信息
 
-已有多台真实节点服务器用于联调测试，详情如下：
+已有多台真实节点服务器用于联调测试。三份规则文件必须同步维护本节；SSH 密码、节点 Token、订阅 Token、JWT、数据库连接串和 Reality 私钥不得提交到 GitHub，公开仓库只保留 `[REDACTED]`。
 
 **节点 1**
 
@@ -218,11 +218,18 @@ JWT 双 Token：
 | 项目 | 值 |
 |------|-----|
 | 节点 IP | `154.219.106.105` |
+| 出口 IP | `154.219.106.105`, `154.219.106.53` |
 | SSH 用户 | `root` |
 | SSH 密码 | `[REDACTED]` |
 | xray-core | v26.3.27（已安装） |
 | xray 配置 | `/usr/local/etc/xray/config.json` |
+| 协议 | VLESS + Reality + TCP，端口 443，每个出口 IP 独立 inbound/outbound |
 | Reality SNI | `www.microsoft.com` |
 | Reality PublicKey | `zCFojnBF8PNYGYWgHWTynGvPVgp-14G9ttU9rxLD7HE` |
+| node-agent | `raypilot-node-agent` Docker 容器，`AGENT_ROLE=multi_exit` |
+| 逻辑节点 | 当前联调记录为 `33 -> 154.219.106.105`、`34 -> 154.219.106.53` |
+| 旧代理 | systemd `node-agent` 与旧 relay agent 已清理 |
+| 中心服务地址 | `[REDACTED]` |
+| NodeHost Token | `[REDACTED]` |
 
-部署方式：`node-agent` 二进制上传至 `/usr/local/bin/node-agent`，systemd 服务文件 `/etc/systemd/system/node-agent.service`。
+部署方式：一台多出口服务器只保留一个 multi_exit node-agent；旧 systemd/relay agent 不得与当前出口角色并存。

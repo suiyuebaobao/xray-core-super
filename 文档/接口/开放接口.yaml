@@ -252,7 +252,7 @@ paths:
   /api/admin/nodes/deploy:
     post:
       summary: 一键部署出口节点
-      description: 默认单 IP 部署；multi_ip_enabled=true 时，按管理员确认的 selected_ips 创建 node_hosts 和多条逻辑出口 nodes，并只启动一个 multi_exit node-agent。
+      description: 默认单 IP 部署；multi_ip_enabled=true 时，按管理员确认的 selected_ips 创建 node_hosts 和多条逻辑出口 nodes，并只启动一个 multi_exit node-agent。部署前会清理旧 systemd node-agent、旧出口/中转 agent 容器和冲突的宿主机 Xray 进程。
       security:
         - bearerAuth: []
       responses:

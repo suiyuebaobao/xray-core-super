@@ -189,6 +189,13 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 	}
 	addStep("推送镜像", "success", "镜像推送成功")
 
+	addStep("清理旧节点代理", "running", "清理旧 systemd node-agent、旧容器和冲突的宿主机 Xray")
+	if err := s.cleanupLegacyNodeAgent(sshClient); err != nil {
+		addStep("清理旧节点代理", "failed", err.Error())
+		return result, err
+	}
+	addStep("清理旧节点代理", "success", "旧节点代理已清理")
+
 	nodeToken := strings.TrimSpace(req.NodeToken)
 	if nodeToken == "" {
 		token, err := secure.RandomHex(24)
@@ -390,6 +397,13 @@ func (s *NodeDeployService) deployMultiIP(ctx context.Context, req *DeployReques
 	}
 	addStep("推送镜像", "success", "镜像推送成功")
 
+	addStep("清理旧节点代理", "running", "清理旧 systemd node-agent、旧容器和冲突的宿主机 Xray")
+	if err := s.cleanupLegacyNodeAgent(sshClient); err != nil {
+		addStep("清理旧节点代理", "failed", err.Error())
+		return result, err
+	}
+	addStep("清理旧节点代理", "success", "旧节点代理已清理")
+
 	hostToken := strings.TrimSpace(req.NodeToken)
 	if hostToken == "" {
 		token, err := secure.RandomHex(24)
@@ -541,6 +555,36 @@ func (s *NodeDeployService) pushImage(client *ssh.Client) error {
 		return fmt.Errorf("load image on remote: %w", err)
 	}
 
+	return nil
+}
+
+func (s *NodeDeployService) cleanupLegacyNodeAgent(client *ssh.Client) error {
+	cmd := `set +e
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl stop node-agent 2>/dev/null || true
+		systemctl disable node-agent 2>/dev/null || true
+		systemctl reset-failed node-agent 2>/dev/null || true
+		systemctl stop xray 2>/dev/null || true
+		systemctl disable xray 2>/dev/null || true
+		systemctl reset-failed xray 2>/dev/null || true
+	fi
+	if command -v docker >/dev/null 2>&1; then
+		docker rm -f raypilot-node-agent suiyue-node-agent raypilot-relay-agent suiyue-relay-agent 2>/dev/null || true
+	fi
+	pkill -x node-agent 2>/dev/null || true
+	pkill -x xray 2>/dev/null || true
+	rm -f /etc/systemd/system/node-agent.service
+	rm -f /etc/systemd/system/suiyue-node-agent.service
+	rm -f /usr/local/bin/node-agent /usr/bin/node-agent /root/node-agent
+	rm -f /tmp/node-agent-image.tar.gz /tmp/node-agent-image.tar
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl daemon-reload 2>/dev/null || true
+	fi
+	exit 0`
+	_, err := client.Exec(cmd)
+	if err != nil {
+		return fmt.Errorf("cleanup legacy node agent: %w", err)
+	}
 	return nil
 }
 

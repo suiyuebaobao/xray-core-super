@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"suiyue/internal/model"
 	"suiyue/internal/platform/response"
@@ -29,12 +30,13 @@ import (
 
 // Generator 订阅生成器。
 type Generator struct {
-	subRepo   *repository.SubscriptionRepository
-	tokenRepo *repository.SubscriptionTokenRepository
-	planRepo  *repository.PlanRepository
-	nodeRepo  *repository.NodeRepository
-	userRepo  *repository.UserRepository
-	relayRepo *repository.RelayBackendRepository
+	subRepo     *repository.SubscriptionRepository
+	tokenRepo   *repository.SubscriptionTokenRepository
+	planRepo    *repository.PlanRepository
+	nodeRepo    *repository.NodeRepository
+	userRepo    *repository.UserRepository
+	relayRepo   *repository.RelayBackendRepository
+	profileName string
 }
 
 // NewGenerator 创建订阅生成器。
@@ -44,13 +46,19 @@ func NewGenerator(subRepo *repository.SubscriptionRepository, tokenRepo *reposit
 		rbRepo = relayRepo[0]
 	}
 	return &Generator{
-		subRepo:   subRepo,
-		tokenRepo: tokenRepo,
-		planRepo:  planRepo,
-		nodeRepo:  nodeRepo,
-		userRepo:  userRepo,
-		relayRepo: rbRepo,
+		subRepo:     subRepo,
+		tokenRepo:   tokenRepo,
+		planRepo:    planRepo,
+		nodeRepo:    nodeRepo,
+		userRepo:    userRepo,
+		relayRepo:   rbRepo,
+		profileName: "RayPilot",
 	}
+}
+
+// SetProfileName 设置订阅导入后客户端可读取的配置文件名基础名称。
+func (g *Generator) SetProfileName(name string) {
+	g.profileName = sanitizeProfileName(name)
 }
 
 // GenerateResult 订阅生成结果。
@@ -179,17 +187,17 @@ func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, for
 	case "clash":
 		content = g.generateClashYAML(nodeConfigs)
 		contentType = "text/yaml; charset=utf-8"
-		filename = "config.yaml"
+		filename = g.filenameForFormat(format)
 	case "base64":
 		// Base64 格式：将 URI 列表做 Base64 编码，适用于通用客户端
 		plainContent := g.generatePlainURI(nodeConfigs)
 		content = base64.StdEncoding.EncodeToString([]byte(plainContent))
 		contentType = "text/plain; charset=utf-8"
-		filename = "config.txt"
+		filename = g.filenameForFormat(format)
 	case "plain":
 		content = g.generatePlainURI(nodeConfigs)
 		contentType = "text/plain; charset=utf-8"
-		filename = "config.txt"
+		filename = g.filenameForFormat(format)
 	default:
 		return nil, response.ErrBadRequest
 	}
@@ -208,6 +216,48 @@ func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, for
 		User:         user,
 		Subscription: sub,
 	}, nil
+}
+
+func (g *Generator) filenameForFormat(format string) string {
+	baseName := sanitizeProfileName(g.profileName)
+	extension := ".txt"
+	if format == "clash" {
+		extension = ".yaml"
+	}
+	return trimProfileExtension(baseName) + extension
+}
+
+func sanitizeProfileName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "RayPilot"
+	}
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return '-'
+		default:
+			return r
+		}
+	}, name)
+	name = strings.TrimSpace(strings.Trim(name, ".-"))
+	if name == "" {
+		return "RayPilot"
+	}
+	return name
+}
+
+func trimProfileExtension(name string) string {
+	lower := strings.ToLower(name)
+	for _, ext := range []string{".yaml", ".yml", ".txt"} {
+		if strings.HasSuffix(lower, ext) {
+			return name[:len(name)-len(ext)]
+		}
+	}
+	return name
 }
 
 // NodeConfig 节点配置抽象，作为统一数据源。

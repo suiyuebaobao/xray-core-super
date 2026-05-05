@@ -220,10 +220,15 @@ func TestGenerator_GenerateByToken_Clash(t *testing.T) {
 	result, err := gen.GenerateByToken(ctx, "sub-token-clash", "clash")
 	require.NoError(t, err)
 	assert.Equal(t, "text/yaml; charset=utf-8", result.ContentType)
-	assert.Equal(t, "config.yaml", result.Filename)
+	assert.Equal(t, "RayPilot.yaml", result.Filename)
 	assert.Contains(t, result.Content, "sub-node")
 	assert.Equal(t, user.ID, result.User.ID)
 	assert.Equal(t, sub.ID, result.Subscription.ID)
+
+	gen.SetProfileName("RayPilot UAT.yaml")
+	customResult, err := gen.GenerateByToken(ctx, "sub-token-clash", "clash")
+	require.NoError(t, err)
+	assert.Equal(t, "RayPilot UAT.yaml", customResult.Filename)
 }
 
 // TestGenerator_GenerateByToken_Base64 测试通过 token 生成 Base64 订阅。
@@ -262,7 +267,7 @@ func TestGenerator_GenerateByToken_Base64(t *testing.T) {
 	result, err := gen.GenerateByToken(ctx, "b64-token", "base64")
 	require.NoError(t, err)
 	assert.Equal(t, "text/plain; charset=utf-8", result.ContentType)
-	assert.Equal(t, "config.txt", result.Filename)
+	assert.Equal(t, "RayPilot.txt", result.Filename)
 	// 验证 Base64 可解码
 	decoded, decodeErr := base64.StdEncoding.DecodeString(result.Content)
 	require.NoError(t, decodeErr)

@@ -17,6 +17,7 @@ func TestConfig_LoadDefaults(t *testing.T) {
 	os.Unsetenv("APP_PORT")
 	os.Unsetenv("JWT_SECRET")
 	os.Unsetenv("BCRYPT_ROUNDS")
+	os.Unsetenv("SUBSCRIPTION_PROFILE_NAME")
 
 	cfg := config.Load()
 
@@ -24,6 +25,7 @@ func TestConfig_LoadDefaults(t *testing.T) {
 	assert.Equal(t, "change-this-to-a-random-secret-key", cfg.JWTSecret)
 	assert.Equal(t, 12, cfg.BCryptRounds)
 	assert.Equal(t, "info", cfg.LogLevel)
+	assert.Equal(t, "RayPilot", cfg.SubscriptionProfileName)
 }
 
 // TestConfig_LoadFromEnv 测试从环境变量加载配置。
@@ -34,6 +36,7 @@ func TestConfig_LoadFromEnv(t *testing.T) {
 	os.Setenv("BCRYPT_ROUNDS", "10")
 	os.Setenv("LOG_LEVEL", "debug")
 	os.Setenv("JWT_EXPIRES_IN", "2h")
+	os.Setenv("SUBSCRIPTION_PROFILE_NAME", "RayPilot-UAT")
 
 	cfg := config.Load()
 
@@ -42,6 +45,7 @@ func TestConfig_LoadFromEnv(t *testing.T) {
 	assert.Equal(t, 10, cfg.BCryptRounds)
 	assert.Equal(t, "debug", cfg.LogLevel)
 	assert.Equal(t, 2*time.Hour, cfg.JWTExpiresIn)
+	assert.Equal(t, "RayPilot-UAT", cfg.SubscriptionProfileName)
 
 	// 清理环境变量
 	os.Unsetenv("APP_PORT")
@@ -49,6 +53,7 @@ func TestConfig_LoadFromEnv(t *testing.T) {
 	os.Unsetenv("BCRYPT_ROUNDS")
 	os.Unsetenv("LOG_LEVEL")
 	os.Unsetenv("JWT_EXPIRES_IN")
+	os.Unsetenv("SUBSCRIPTION_PROFILE_NAME")
 }
 
 // TestConfig_InvalidEnv 测试无效环境变量使用默认值。

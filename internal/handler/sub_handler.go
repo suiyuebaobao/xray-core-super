@@ -11,6 +11,8 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"suiyue/internal/platform/response"
 	"suiyue/internal/subscription"
@@ -58,8 +60,29 @@ func (h *SubHandler) Download(c *gin.Context) {
 
 	// 设置响应头
 	c.Header("Content-Type", result.ContentType)
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", result.Filename))
+	c.Header("Content-Disposition", subscriptionContentDisposition(result.Filename))
 
 	// 直接写入响应体
 	c.String(http.StatusOK, result.Content)
+}
+
+func subscriptionContentDisposition(filename string) string {
+	fallback := asciiFilenameFallback(filename)
+	return fmt.Sprintf("attachment; filename=\"%s\"; filename*=UTF-8''%s", fallback, url.PathEscape(filename))
+}
+
+func asciiFilenameFallback(filename string) string {
+	var b strings.Builder
+	for _, r := range filename {
+		if r >= 0x20 && r <= 0x7e && r != '"' && r != '\\' && r != ';' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('_')
+	}
+	fallback := strings.TrimSpace(b.String())
+	if fallback == "" {
+		return "RayPilot.yaml"
+	}
+	return fallback
 }

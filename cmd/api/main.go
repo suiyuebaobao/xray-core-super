@@ -72,6 +72,7 @@ func main() {
 
 	// 创建订阅生成器
 	subGen := subscription.NewGenerator(subRepo, tokenRepo, planRepo, nodeRepo, userRepo, relayBackendRepo)
+	subGen.SetProfileName(cfg.SubscriptionProfileName)
 
 	// 创建流量采集服务
 	trafficSvc := service.NewTrafficService(

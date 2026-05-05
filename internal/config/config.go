@@ -40,6 +40,7 @@ type Config struct {
 
 	// 订阅
 	SubscriptionTokenTTLDays int
+	SubscriptionProfileName  string
 
 	// 任务
 	TaskRetryLimit int
@@ -75,6 +76,7 @@ func Load() *Config {
 		RedeemCodeLength: getEnvInt("REDEEM_CODE_LENGTH", 16),
 
 		SubscriptionTokenTTLDays: getEnvInt("SUBSCRIPTION_TOKEN_TTL_DAYS", 365),
+		SubscriptionProfileName:  getEnv("SUBSCRIPTION_PROFILE_NAME", "RayPilot"),
 
 		TaskRetryLimit: getEnvInt("TASK_RETRY_LIMIT", 10),
 		TaskLockTTL:    getEnvDuration("TASK_LOCK_TTL", 120*time.Second),

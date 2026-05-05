@@ -2,6 +2,7 @@ import { expect, request as apiRequest, test } from '@playwright/test'
 
 const adminUsername = process.env.E2E_ADMIN_USERNAME
 const adminPassword = process.env.E2E_ADMIN_PASSWORD
+const subscriptionProfileName = process.env.E2E_SUBSCRIPTION_PROFILE_NAME || 'RayPilot'
 const csrfHeader = { 'X-CSRF-Token': 'suiyue-web' }
 
 function requireEnv(name, value) {
@@ -151,7 +152,8 @@ async function cleanupUser(request, adminToken, username, knownId) {
 async function expectSubscriptionDownload(request, url, format, nodeName) {
   const response = await request.get(url)
   expect(response.ok(), `${format} subscription download`).toBeTruthy()
-  expect(response.headers()['content-disposition'] || '', `${format} content disposition`).toContain('config')
+  const expectedFilename = `${subscriptionProfileName}.${format === 'clash' ? 'yaml' : 'txt'}`
+  expect(response.headers()['content-disposition'] || '', `${format} content disposition`).toContain(expectedFilename)
   const text = await response.text()
   const content = format === 'base64' ? Buffer.from(text, 'base64').toString('utf8') : text
   expect(content, `${format} subscription contains the test node`).toContain(nodeName)

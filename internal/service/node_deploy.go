@@ -52,6 +52,9 @@ type DeployRequest struct {
 	NodeToken      string   `json:"node_token"`
 	NodeName       string   `json:"node_name"`
 	Transport      string   `json:"transport"`
+	Transports     []string `json:"transports"`
+	TCPPort        uint32   `json:"tcp_port"`
+	XHTTPPort      uint32   `json:"xhttp_port"`
 	XHTTPPath      string   `json:"xhttp_path"`
 	XHTTPHost      string   `json:"xhttp_host"`
 	XHTTPMode      string   `json:"xhttp_mode"`
@@ -125,17 +128,116 @@ type MultiExitNodeConfig struct {
 	XrayUserKeyPrefix string `json:"xray_user_key_prefix"`
 }
 
-func normalizeDeployTransport(req *DeployRequest) {
-	req.Transport = normalizeTransport(req.Transport)
-	req.XHTTPHost = strings.TrimSpace(req.XHTTPHost)
-	req.XHTTPMode = normalizeXHTTPMode(req.XHTTPMode)
-	if req.Transport == "xhttp" {
-		req.XHTTPPath = normalizeXHTTPPath(req.XHTTPPath)
-		return
+type deployTransportOption struct {
+	Transport string
+	Port      uint32
+	XHTTPPath string
+	XHTTPHost string
+	XHTTPMode string
+	Flow      string
+}
+
+func normalizeDeployTransportOptions(req *DeployRequest) ([]deployTransportOption, error) {
+	transports := normalizeTransportList(req.Transports, req.Transport)
+	if len(transports) == 0 {
+		transports = []string{"tcp"}
 	}
-	req.XHTTPPath = ""
-	req.XHTTPHost = ""
-	req.XHTTPMode = "auto"
+	if len(transports) > 2 {
+		return nil, fmt.Errorf("最多只能选择 2 种传输模式")
+	}
+
+	xhttpPath := normalizeXHTTPPath(req.XHTTPPath)
+	xhttpHost := strings.TrimSpace(req.XHTTPHost)
+	xhttpMode := normalizeXHTTPMode(req.XHTTPMode)
+	tcpPort := req.TCPPort
+	if tcpPort == 0 {
+		tcpPort = 443
+	}
+	xhttpPort := req.XHTTPPort
+	if xhttpPort == 0 {
+		if len(transports) > 1 {
+			xhttpPort = 8443
+		} else {
+			xhttpPort = 443
+		}
+	}
+
+	options := make([]deployTransportOption, 0, len(transports))
+	seenPorts := map[uint32]string{}
+	for _, transport := range transports {
+		option := deployTransportOption{Transport: transport}
+		switch transport {
+		case "xhttp":
+			option.Port = xhttpPort
+			option.XHTTPPath = xhttpPath
+			option.XHTTPHost = xhttpHost
+			option.XHTTPMode = xhttpMode
+			option.Flow = ""
+		default:
+			option.Transport = "tcp"
+			option.Port = tcpPort
+			option.XHTTPMode = "auto"
+			option.Flow = "xtls-rprx-vision"
+		}
+		if option.Port == 0 || option.Port > 65535 {
+			return nil, fmt.Errorf("%s 端口无效: %d", strings.ToUpper(option.Transport), option.Port)
+		}
+		if existing, ok := seenPorts[option.Port]; ok {
+			return nil, fmt.Errorf("%s 与 %s 不能使用同一个端口 %d", strings.ToUpper(existing), strings.ToUpper(option.Transport), option.Port)
+		}
+		seenPorts[option.Port] = option.Transport
+		options = append(options, option)
+	}
+
+	primary := options[0]
+	req.Transport = primary.Transport
+	req.Transports = transports
+	req.TCPPort = tcpPort
+	req.XHTTPPort = xhttpPort
+	req.XHTTPPath = xhttpPath
+	req.XHTTPHost = xhttpHost
+	req.XHTTPMode = xhttpMode
+	return options, nil
+}
+
+func normalizeTransportList(transports []string, fallback string) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, 2)
+	appendTransport := func(raw string) {
+		transport := normalizeTransport(raw)
+		if _, ok := seen[transport]; ok {
+			return
+		}
+		seen[transport] = struct{}{}
+		result = append(result, transport)
+	}
+	for _, transport := range transports {
+		appendTransport(transport)
+	}
+	if len(result) == 0 {
+		appendTransport(fallback)
+	}
+	ordered := make([]string, 0, len(result))
+	for _, transport := range []string{"tcp", "xhttp"} {
+		if _, ok := seen[transport]; ok {
+			ordered = append(ordered, transport)
+		}
+	}
+	return ordered
+}
+
+func applyDeployTransportOption(node *model.Node, option deployTransportOption) {
+	node.Transport = option.Transport
+	node.Port = option.Port
+	node.Flow = option.Flow
+	node.XHTTPPath = ""
+	node.XHTTPHost = ""
+	node.XHTTPMode = "auto"
+	if option.Transport == "xhttp" {
+		node.XHTTPPath = option.XHTTPPath
+		node.XHTTPHost = option.XHTTPHost
+		node.XHTTPMode = option.XHTTPMode
+	}
 }
 
 func normalizeTransport(transport string) string {
@@ -169,9 +271,12 @@ func normalizeXHTTPMode(mode string) string {
 
 // Deploy 一键部署节点。
 func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*DeployResult, error) {
-	normalizeDeployTransport(req)
-	if req.MultiIPEnabled {
-		return s.deployMultiIP(ctx, req)
+	options, err := normalizeDeployTransportOptions(req)
+	if err != nil {
+		return &DeployResult{Steps: []Step{}}, err
+	}
+	if req.MultiIPEnabled || len(options) > 1 {
+		return s.deployMultiLine(ctx, req, options)
 	}
 
 	result := &DeployResult{Steps: []Step{}}
@@ -268,23 +373,15 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 	node := &model.Node{
 		Name:           nodeName,
 		Protocol:       "vless",
-		Transport:      req.Transport,
 		Host:           req.SSHHost,
-		Port:           443,
 		ServerName:     "www.microsoft.com",
-		Flow:           "xtls-rprx-vision",
 		LineMode:       "direct_and_relay",
-		XHTTPPath:      req.XHTTPPath,
-		XHTTPHost:      req.XHTTPHost,
-		XHTTPMode:      req.XHTTPMode,
 		AgentBaseURL:   fmt.Sprintf("http://%s:8080", req.SSHHost),
 		AgentTokenHash: hex.EncodeToString(hash[:]),
 		IsEnabled:      true,
 	}
-	if node.Transport == "xhttp" {
-		node.Flow = ""
-	}
-	node, err := s.nodeRepo.Create(ctx, node)
+	applyDeployTransportOption(node, options[0])
+	node, err = s.nodeRepo.Create(ctx, node)
 	if err != nil {
 		addStep("创建记录", "failed", err.Error())
 		return result, fmt.Errorf("创建节点记录失败: %w", err)
@@ -383,17 +480,21 @@ func (s *NodeDeployService) ScanIPs(ctx context.Context, req *ScanIPsRequest) (*
 	return result, nil
 }
 
-func (s *NodeDeployService) deployMultiIP(ctx context.Context, req *DeployRequest) (*DeployResult, error) {
+func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequest, options []deployTransportOption) (*DeployResult, error) {
 	result := &DeployResult{Steps: []Step{}}
 	if s.nodeHostRepo == nil {
 		return result, fmt.Errorf("node host repository is not configured")
 	}
-	selectedIPs, err := normalizeSelectedIPs(req.SelectedIPs)
-	if err != nil {
-		return result, err
-	}
-	if len(selectedIPs) == 0 {
-		return result, fmt.Errorf("multi_ip_enabled=true requires selected_ips")
+	selectedIPs := []string{strings.TrimSpace(req.SSHHost)}
+	if req.MultiIPEnabled {
+		var err error
+		selectedIPs, err = normalizeSelectedIPs(req.SelectedIPs)
+		if err != nil {
+			return result, err
+		}
+		if len(selectedIPs) == 0 {
+			return result, fmt.Errorf("multi_ip_enabled=true requires selected_ips")
+		}
 	}
 
 	var sshClient *ssh.Client
@@ -429,12 +530,14 @@ func (s *NodeDeployService) deployMultiIP(ctx context.Context, req *DeployReques
 	defer sshClient.Close()
 	addStep("SSH 连接", "success", "连接成功")
 
-	addStep("校验出口 IP", "running", "确认所选 IP 存在于服务器并可作为公网出口")
-	if err := validateSelectedIPsOnServer(sshClient, selectedIPs); err != nil {
-		addStep("校验出口 IP", "failed", err.Error())
-		return result, err
+	if req.MultiIPEnabled {
+		addStep("校验出口 IP", "running", "确认所选 IP 存在于服务器并可作为公网出口")
+		if err := validateSelectedIPsOnServer(sshClient, selectedIPs); err != nil {
+			addStep("校验出口 IP", "failed", err.Error())
+			return result, err
+		}
+		addStep("校验出口 IP", "success", fmt.Sprintf("已确认 %d 个出口 IP", len(selectedIPs)))
 	}
-	addStep("校验出口 IP", "success", fmt.Sprintf("已确认 %d 个出口 IP", len(selectedIPs)))
 
 	addStep("检测 Docker", "running", "检查 Docker 是否已安装")
 	dockerInstalled, _ := s.checkDocker(sshClient)
@@ -496,60 +599,52 @@ func (s *NodeDeployService) deployMultiIP(ctx context.Context, req *DeployReques
 	createdHostID = nodeHost.ID
 	addStep("创建主机记录", "success", fmt.Sprintf("物理主机已创建 (ID: %d)", nodeHost.ID))
 
-	nodeConfigs := make([]MultiExitNodeConfig, 0, len(selectedIPs))
+	nodeConfigs := make([]MultiExitNodeConfig, 0, len(selectedIPs)*len(options))
 	for i, ip := range selectedIPs {
-		nodeName := fmt.Sprintf("raypilot-node-%s", ip)
-		if strings.TrimSpace(req.NodeName) != "" {
-			nodeName = fmt.Sprintf("%s-%d", req.NodeName, i+1)
+		listenIP := deployListenIP(req.MultiIPEnabled, ip)
+		for j, option := range options {
+			nodeName := deployLogicalNodeName(req.NodeName, ip, i, len(selectedIPs), option, len(options))
+			node := &model.Node{
+				Name:           nodeName,
+				Protocol:       "vless",
+				Host:           ip,
+				ServerName:     "www.microsoft.com",
+				LineMode:       "direct_and_relay",
+				NodeHostID:     &nodeHost.ID,
+				ListenIP:       listenIP,
+				OutboundIP:     listenIP,
+				AgentBaseURL:   fmt.Sprintf("http://%s:8080", req.SSHHost),
+				AgentTokenHash: tokenHash,
+				IsEnabled:      true,
+				SortWeight:     i*len(options) + j,
+			}
+			applyDeployTransportOption(node, option)
+			node, err = s.nodeRepo.Create(ctx, node)
+			if err != nil {
+				addStep("创建节点记录", "failed", err.Error())
+				return fail("创建节点记录失败: %w", err)
+			}
+			createdNodeIDs = append(createdNodeIDs, node.ID)
+			node.XrayInboundTag = fmt.Sprintf("node_%d_in", node.ID)
+			node.XrayOutboundTag = fmt.Sprintf("node_%d_out", node.ID)
+			if err := s.nodeRepo.Update(ctx, node); err != nil {
+				addStep("更新节点标签", "failed", err.Error())
+				return fail("更新节点标签失败: %w", err)
+			}
+			nodeConfigs = append(nodeConfigs, MultiExitNodeConfig{
+				NodeID:            node.ID,
+				IP:                listenIP,
+				Port:              node.Port,
+				Transport:         node.Transport,
+				XHTTPPath:         node.XHTTPPath,
+				XHTTPHost:         node.XHTTPHost,
+				XHTTPMode:         node.XHTTPMode,
+				InboundTag:        node.XrayInboundTag,
+				OutboundTag:       node.XrayOutboundTag,
+				XrayUserKeyPrefix: fmt.Sprintf("node_%d__", node.ID),
+			})
+			addStep("创建节点记录", "success", fmt.Sprintf("节点 %s:%d/%s 已创建 (ID: %d)", ip, node.Port, node.Transport, node.ID))
 		}
-		node := &model.Node{
-			Name:           nodeName,
-			Protocol:       "vless",
-			Transport:      req.Transport,
-			Host:           ip,
-			Port:           443,
-			ServerName:     "www.microsoft.com",
-			Flow:           "xtls-rprx-vision",
-			LineMode:       "direct_and_relay",
-			XHTTPPath:      req.XHTTPPath,
-			XHTTPHost:      req.XHTTPHost,
-			XHTTPMode:      req.XHTTPMode,
-			NodeHostID:     &nodeHost.ID,
-			ListenIP:       ip,
-			OutboundIP:     ip,
-			AgentBaseURL:   fmt.Sprintf("http://%s:8080", req.SSHHost),
-			AgentTokenHash: tokenHash,
-			IsEnabled:      true,
-			SortWeight:     i,
-		}
-		if node.Transport == "xhttp" {
-			node.Flow = ""
-		}
-		node, err = s.nodeRepo.Create(ctx, node)
-		if err != nil {
-			addStep("创建节点记录", "failed", err.Error())
-			return fail("创建节点记录失败: %w", err)
-		}
-		createdNodeIDs = append(createdNodeIDs, node.ID)
-		node.XrayInboundTag = fmt.Sprintf("node_%d_in", node.ID)
-		node.XrayOutboundTag = fmt.Sprintf("node_%d_out", node.ID)
-		if err := s.nodeRepo.Update(ctx, node); err != nil {
-			addStep("更新节点标签", "failed", err.Error())
-			return fail("更新节点标签失败: %w", err)
-		}
-		nodeConfigs = append(nodeConfigs, MultiExitNodeConfig{
-			NodeID:            node.ID,
-			IP:                ip,
-			Port:              node.Port,
-			Transport:         node.Transport,
-			XHTTPPath:         node.XHTTPPath,
-			XHTTPHost:         node.XHTTPHost,
-			XHTTPMode:         node.XHTTPMode,
-			InboundTag:        node.XrayInboundTag,
-			OutboundTag:       node.XrayOutboundTag,
-			XrayUserKeyPrefix: fmt.Sprintf("node_%d__", node.ID),
-		})
-		addStep("创建节点记录", "success", fmt.Sprintf("节点 %s 已创建 (ID: %d)", ip, node.ID))
 	}
 
 	addStep("启动容器", "running", "启动 multi_exit node-agent 容器")
@@ -569,8 +664,44 @@ func (s *NodeDeployService) deployMultiIP(ctx context.Context, req *DeployReques
 	result.NodeHostID = nodeHost.ID
 	result.NodeIDs = createdNodeIDs
 	result.Success = true
-	result.Message = "多 IP 节点部署成功"
+	if req.MultiIPEnabled {
+		result.Message = "多 IP 节点部署成功"
+	} else {
+		result.Message = "多传输节点部署成功"
+	}
 	return result, nil
+}
+
+func deployListenIP(multiIPEnabled bool, host string) string {
+	if multiIPEnabled {
+		return host
+	}
+	if ip := net.ParseIP(strings.TrimSpace(host)); ip != nil && ip.To4() != nil {
+		return ip.To4().String()
+	}
+	return "0.0.0.0"
+}
+
+func deployLogicalNodeName(base string, ip string, ipIndex int, ipCount int, option deployTransportOption, optionCount int) string {
+	transportLabel := strings.ToUpper(option.Transport)
+	if strings.TrimSpace(base) == "" {
+		name := "raypilot-node-" + ip
+		if optionCount > 1 {
+			return name + "-" + transportLabel
+		}
+		return name
+	}
+	base = strings.TrimSpace(base)
+	if ipCount > 1 && optionCount > 1 {
+		return fmt.Sprintf("%s-%d-%s", base, ipIndex+1, transportLabel)
+	}
+	if ipCount > 1 {
+		return fmt.Sprintf("%s-%d", base, ipIndex+1)
+	}
+	if optionCount > 1 && option.Transport != "tcp" {
+		return fmt.Sprintf("%s-%s", base, transportLabel)
+	}
+	return base
 }
 
 func (s *NodeDeployService) checkDocker(client *ssh.Client) (bool, error) {

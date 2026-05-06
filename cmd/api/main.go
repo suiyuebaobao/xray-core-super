@@ -110,7 +110,7 @@ func main() {
 	adminDashboardHandler := handler.NewAdminDashboardHandler(userRepo, nodeRepo, planRepo, subRepo)
 	adminPlanHandler := handler.NewAdminPlanHandlerWithSync(planRepo, nodeGroupRepo, nodeAccessSvc)
 	adminNodeGroupHandler := handler.NewAdminNodeGroupHandlerWithNodes(nodeGroupRepo, nodeRepo, nodeAccessSvc)
-	adminNodeHandler := handler.NewAdminNodeHandlerWithSync(nodeRepo, subRepo, nodeAccessSvc)
+	adminNodeHandler := handler.NewAdminNodeHandlerWithSync(nodeRepo, subRepo, nodeAccessSvc, nodeHostRepo)
 	adminRelayHandler := handler.NewAdminRelayHandler(relayRepo, relayBackendRepo, relaySvc)
 	adminUserHandler := handler.NewAdminUserHandlerWithSubscription(userRepo, subRepo, tokenRepo, planRepo, nodeAccessSvc, cfg.BCryptRounds, cfg.XrayUserKeyDomain)
 	adminOrderHandler := handler.NewAdminOrderHandler(orderRepo)

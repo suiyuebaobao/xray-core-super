@@ -154,6 +154,16 @@ function tableRow(page, rootSelector, text) {
   return page.locator(`${rootSelector} .el-table__body-wrapper tbody tr`).filter({ hasText: text }).first()
 }
 
+function escapeRegex(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function tableRowExactText(page, rootSelector, text) {
+  return page.locator(`${rootSelector} .el-table__body-wrapper tbody tr`).filter({
+    has: page.getByText(new RegExp(`^${escapeRegex(text)}$`)),
+  }).first()
+}
+
 async function findByName(request, token, url, collectionKey, name) {
   const data = await api(request, token, 'get', url)
   const item = (data[collectionKey] || []).find((entry) => entry.name === name)
@@ -249,6 +259,9 @@ async function cleanupOpsData(request, token, created, planCleanupPayload) {
   if (created.nodeId) {
     await safeApi(request, token, 'delete', `/api/admin/nodes/${created.nodeId}`)
   }
+  for (const nodeId of created.extraNodeIds || []) {
+    await safeApi(request, token, 'delete', `/api/admin/nodes/${nodeId}`)
+  }
 }
 
 test.describe('admin operations flow', () => {
@@ -273,6 +286,7 @@ test.describe('admin operations flow', () => {
       relayId: null,
       userId: null,
       tokenId: null,
+      extraNodeIds: [],
     }
     let nodeName = `${prefix}-node`
     let groupName = `${prefix}-group`
@@ -302,8 +316,9 @@ test.describe('admin operations flow', () => {
         let dialog = activeDialog(page, '新增节点')
         await fillFormField(dialog, '节点名称', nodeName)
         await fillFormField(dialog, '地址', '203.0.113.20')
-        await fillFormField(dialog, '端口', 24430)
+        await fillFormField(dialog, 'TCP 端口', 24430)
         await selectFormOption(page, dialog, '传输模式', 'XHTTP + Reality')
+        await fillFormField(dialog, 'XHTTP 端口', 24432)
         await fillFormField(dialog, 'XHTTP Path', '/e2e-xhttp')
         await selectFormOption(page, dialog, 'XHTTP Mode', 'stream-up')
         await fillFormField(dialog, 'XHTTP Host', 'cdn.example.test')
@@ -314,26 +329,35 @@ test.describe('admin operations flow', () => {
         await fillFormField(dialog, 'Agent 地址', 'http://203.0.113.20:18080')
         await fillFormField(dialog, 'Agent Token', `node-token-${suffix}`)
         await dialog.getByRole('button', { name: '保存' }).click()
-        await expect(tableRow(page, '.admin-nodes', nodeName)).toBeVisible()
-        await expect(tableRow(page, '.admin-nodes', nodeName)).toContainText('XHTTP')
+        await expect(tableRowExactText(page, '.admin-nodes', nodeName)).toBeVisible()
+        await expect(tableRowExactText(page, '.admin-nodes', nodeName)).toContainText('TCP')
+        await expect(tableRowExactText(page, '.admin-nodes', `${nodeName}-XHTTP`)).toContainText('XHTTP')
         const createdNode = await findByName(request, adminToken, '/api/admin/nodes', 'nodes', nodeName)
+        const createdXHTTPNode = await findByName(request, adminToken, '/api/admin/nodes', 'nodes', `${nodeName}-XHTTP`)
         created.nodeId = createdNode.id
-        expect(createdNode.transport).toBe('xhttp')
-        expect(createdNode.xhttp_path).toBe('/e2e-xhttp')
-        expect(createdNode.flow || '').toBe('')
+        created.extraNodeIds.push(createdXHTTPNode.id)
+        expect(createdNode.transport).toBe('tcp')
+        expect(createdNode.port).toBe(24430)
+        expect(createdXHTTPNode.transport).toBe('xhttp')
+        expect(createdXHTTPNode.port).toBe(24432)
+        expect(createdXHTTPNode.xhttp_path).toBe('/e2e-xhttp')
+        expect(createdXHTTPNode.flow || '').toBe('')
 
-        await tableRow(page, '.admin-nodes', nodeName).getByRole('button', { name: '编辑' }).click()
+        await tableRowExactText(page, '.admin-nodes', nodeName).getByRole('button', { name: '编辑' }).click()
         dialog = activeDialog(page, '编辑节点')
         nodeName = `${prefix}-node-updated`
         await fillFormField(dialog, '节点名称', nodeName)
         await fillFormField(dialog, '地址', '203.0.113.21')
-        await fillFormField(dialog, '端口', 24431)
+        await fillFormField(dialog, 'TCP 端口', 24431)
         await dialog.getByRole('button', { name: '保存' }).click()
-        await expect(tableRow(page, '.admin-nodes', nodeName)).toBeVisible()
-        await expect(tableRow(page, '.admin-nodes', nodeName)).toContainText('XHTTP')
+        await expect(tableRowExactText(page, '.admin-nodes', nodeName)).toBeVisible()
+        await expect(tableRowExactText(page, '.admin-nodes', nodeName)).toContainText('TCP')
 
         await page.getByRole('button', { name: '一键部署' }).click()
         dialog = activeDialog(page, '一键部署节点')
+        await selectFormOption(page, dialog, '传输模式', 'XHTTP + Reality')
+        await expect(formItem(dialog, 'TCP 端口')).toBeVisible()
+        await expect(formItem(dialog, 'XHTTP 端口')).toBeVisible()
         await expect(dialog.getByText('多 IP 服务器')).toBeVisible()
         await expect(dialog.getByRole('button', { name: '扫描出口 IP' })).toHaveCount(0)
         await formItem(dialog, '多 IP 服务器').locator('.el-switch').click()

@@ -15,7 +15,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -484,6 +486,7 @@ func (h *AdminNodeGroupHandler) syncNodeGroupBindingChange(ctx context.Context, 
 // AdminNodeHandler 管理后台节点处理器。
 type AdminNodeHandler struct {
 	nodeRepo      *repository.NodeRepository
+	nodeHostRepo  *repository.NodeHostRepository
 	subRepo       *repository.SubscriptionRepository
 	nodeAccessSvc nodeAccessNodeSyncer
 }
@@ -494,8 +497,12 @@ func NewAdminNodeHandler(nodeRepo *repository.NodeRepository) *AdminNodeHandler 
 }
 
 // NewAdminNodeHandlerWithSync 创建带节点访问同步能力的节点处理器。
-func NewAdminNodeHandlerWithSync(nodeRepo *repository.NodeRepository, subRepo *repository.SubscriptionRepository, nodeAccessSvc nodeAccessNodeSyncer) *AdminNodeHandler {
-	return &AdminNodeHandler{nodeRepo: nodeRepo, subRepo: subRepo, nodeAccessSvc: nodeAccessSvc}
+func NewAdminNodeHandlerWithSync(nodeRepo *repository.NodeRepository, subRepo *repository.SubscriptionRepository, nodeAccessSvc nodeAccessNodeSyncer, nodeHostRepo ...*repository.NodeHostRepository) *AdminNodeHandler {
+	var hostRepo *repository.NodeHostRepository
+	if len(nodeHostRepo) > 0 {
+		hostRepo = nodeHostRepo[0]
+	}
+	return &AdminNodeHandler{nodeRepo: nodeRepo, nodeHostRepo: hostRepo, subRepo: subRepo, nodeAccessSvc: nodeAccessSvc}
 }
 
 type nodeAccessNodeSyncer interface {
@@ -544,6 +551,118 @@ func normalizeNodeTransportFields(transport, xhttpPath, xhttpHost, xhttpMode, fl
 	}
 }
 
+type nodeTransportOption struct {
+	Transport string
+	Port      uint32
+	XHTTPPath string
+	XHTTPHost string
+	XHTTPMode string
+	Flow      string
+}
+
+func normalizeNodeTransportOptions(req *model.CreateNodeRequest) ([]nodeTransportOption, error) {
+	transports := normalizeNodeTransportList(req.Transports, req.Transport)
+	if len(transports) == 0 {
+		transports = []string{"tcp"}
+	}
+	xhttpPath := req.XHTTPPath
+	xhttpHost := req.XHTTPHost
+	xhttpMode := req.XHTTPMode
+	flow := req.Flow
+
+	tcpPort := req.TCPPort
+	if tcpPort == 0 {
+		if req.Port != 0 && (len(transports) == 1 || transports[0] == "tcp") {
+			tcpPort = req.Port
+		} else {
+			tcpPort = 443
+		}
+	}
+	xhttpPort := req.XHTTPPort
+	if xhttpPort == 0 {
+		if req.Port != 0 && len(transports) == 1 && transports[0] == "xhttp" {
+			xhttpPort = req.Port
+		} else if len(transports) > 1 {
+			xhttpPort = 8443
+		} else {
+			xhttpPort = 443
+		}
+	}
+
+	options := make([]nodeTransportOption, 0, len(transports))
+	seenPorts := map[uint32]string{}
+	for _, transport := range transports {
+		option := nodeTransportOption{Transport: transport}
+		if transport == "xhttp" {
+			option.Port = xhttpPort
+			option.XHTTPPath = xhttpPath
+			option.XHTTPHost = xhttpHost
+			option.XHTTPMode = xhttpMode
+			option.Flow = flow
+		} else {
+			option.Port = tcpPort
+			option.Flow = flow
+		}
+		normalizeNodeTransportFields(&option.Transport, &option.XHTTPPath, &option.XHTTPHost, &option.XHTTPMode, &option.Flow)
+		if option.Port == 0 || option.Port > 65535 {
+			return nil, fmt.Errorf("%s 端口无效: %d", strings.ToUpper(option.Transport), option.Port)
+		}
+		if existing, ok := seenPorts[option.Port]; ok {
+			return nil, fmt.Errorf("%s 与 %s 不能使用同一个端口 %d", strings.ToUpper(existing), strings.ToUpper(option.Transport), option.Port)
+		}
+		seenPorts[option.Port] = option.Transport
+		options = append(options, option)
+	}
+	return options, nil
+}
+
+func normalizeNodeTransportList(transports []string, fallback string) []string {
+	seen := map[string]struct{}{}
+	appendTransport := func(raw string) {
+		transport := strings.ToLower(strings.TrimSpace(raw))
+		if transport != "xhttp" {
+			transport = "tcp"
+		}
+		seen[transport] = struct{}{}
+	}
+	for _, transport := range transports {
+		appendTransport(transport)
+	}
+	if len(seen) == 0 {
+		appendTransport(fallback)
+	}
+	result := make([]string, 0, len(seen))
+	for _, transport := range []string{"tcp", "xhttp"} {
+		if _, ok := seen[transport]; ok {
+			result = append(result, transport)
+		}
+	}
+	return result
+}
+
+func applyNodeTransportOption(node *model.Node, option nodeTransportOption) {
+	node.Transport = option.Transport
+	node.Port = option.Port
+	node.Flow = option.Flow
+	node.XHTTPPath = option.XHTTPPath
+	node.XHTTPHost = option.XHTTPHost
+	node.XHTTPMode = option.XHTTPMode
+}
+
+func multiTransportNodeName(base string, option nodeTransportOption) string {
+	if option.Transport == "tcp" {
+		return base
+	}
+	return fmt.Sprintf("%s-%s", base, strings.ToUpper(option.Transport))
+}
+
+func nodeListenIPForHost(host string) string {
+	if ip := net.ParseIP(strings.TrimSpace(host)); ip != nil && ip.To4() != nil {
+		return ip.To4().String()
+	}
+	return "0.0.0.0"
+}
+
 // Create 处理 POST /api/admin/nodes — 创建节点。
 func (h *AdminNodeHandler) Create(c *gin.Context) {
 	var req model.CreateNodeRequest
@@ -554,9 +673,10 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 	if req.Protocol == "" {
 		req.Protocol = "vless"
 	}
-	normalizeNodeTransportFields(&req.Transport, &req.XHTTPPath, &req.XHTTPHost, &req.XHTTPMode, &req.Flow)
-	if req.Port == 0 {
-		req.Port = 443
+	options, err := normalizeNodeTransportOptions(&req)
+	if err != nil {
+		response.HandleError(c, response.ErrBadRequest)
+		return
 	}
 	if req.Fingerprint == "" {
 		req.Fingerprint = "chrome"
@@ -572,26 +692,87 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 		agentTokenHash = hex.EncodeToString(h[:])
 	}
 
-	node, err := h.nodeRepo.Create(c.Request.Context(), &model.Node{
+	if len(options) > 1 {
+		if h.nodeHostRepo == nil {
+			response.HandleError(c, response.ErrInternalServer)
+			return
+		}
+		nodeHost, err := h.nodeHostRepo.Create(c.Request.Context(), &model.NodeHost{
+			Name:           req.Name,
+			SSHHost:        req.Host,
+			SSHPort:        22,
+			AgentBaseURL:   req.AgentBaseURL,
+			AgentTokenHash: agentTokenHash,
+			IsEnabled:      true,
+		})
+		if err != nil {
+			response.HandleError(c, response.ErrInternalServer)
+			return
+		}
+		listenIP := nodeListenIPForHost(req.Host)
+		nodes := make([]*model.Node, 0, len(options))
+		createdNodeIDs := make([]uint64, 0, len(options))
+		cleanup := func() {
+			for _, id := range createdNodeIDs {
+				_ = h.nodeRepo.Delete(c.Request.Context(), id)
+			}
+			_ = h.nodeHostRepo.Delete(c.Request.Context(), nodeHost.ID)
+		}
+		for i, option := range options {
+			node := &model.Node{
+				Name:           multiTransportNodeName(req.Name, option),
+				Protocol:       req.Protocol,
+				Host:           req.Host,
+				ServerName:     req.ServerName,
+				PublicKey:      req.PublicKey,
+				ShortID:        req.ShortID,
+				Fingerprint:    req.Fingerprint,
+				LineMode:       req.LineMode,
+				NodeHostID:     &nodeHost.ID,
+				ListenIP:       listenIP,
+				OutboundIP:     listenIP,
+				AgentBaseURL:   req.AgentBaseURL,
+				AgentTokenHash: agentTokenHash,
+				SortWeight:     req.SortWeight + i,
+				IsEnabled:      req.IsEnabled,
+			}
+			applyNodeTransportOption(node, option)
+			created, err := h.nodeRepo.Create(c.Request.Context(), node)
+			if err != nil {
+				cleanup()
+				response.HandleError(c, response.ErrInternalServer)
+				return
+			}
+			createdNodeIDs = append(createdNodeIDs, created.ID)
+			created.XrayInboundTag = fmt.Sprintf("node_%d_in", created.ID)
+			created.XrayOutboundTag = fmt.Sprintf("node_%d_out", created.ID)
+			if err := h.nodeRepo.Update(c.Request.Context(), created); err != nil {
+				cleanup()
+				response.HandleError(c, response.ErrInternalServer)
+				return
+			}
+			nodes = append(nodes, created)
+		}
+		response.Success(c, gin.H{"node_host": nodeHost, "nodes": nodes})
+		return
+	}
+
+	node := &model.Node{
 		Name:           req.Name,
 		Protocol:       req.Protocol,
-		Transport:      req.Transport,
 		Host:           req.Host,
-		Port:           req.Port,
 		ServerName:     req.ServerName,
 		PublicKey:      req.PublicKey,
 		ShortID:        req.ShortID,
 		Fingerprint:    req.Fingerprint,
-		Flow:           req.Flow,
 		LineMode:       req.LineMode,
-		XHTTPPath:      req.XHTTPPath,
-		XHTTPHost:      req.XHTTPHost,
-		XHTTPMode:      req.XHTTPMode,
 		AgentBaseURL:   req.AgentBaseURL,
 		AgentTokenHash: agentTokenHash,
 		SortWeight:     req.SortWeight,
 		IsEnabled:      req.IsEnabled,
-	})
+	}
+	applyNodeTransportOption(node, options[0])
+	node, err = h.nodeRepo.Create(c.Request.Context(), node)
 	if err != nil {
 		response.HandleError(c, response.ErrInternalServer)
 		return

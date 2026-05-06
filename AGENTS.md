@@ -65,6 +65,8 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - `nodes.protocol` 表示 VLESS 等协议，`nodes.transport` 表示传输层；当前默认 `tcp`，可选 `xhttp`。
 - XHTTP 节点仍使用 VLESS + Reality，但必须清空 `flow`，不得给 Xray clients 或订阅写入 `xtls-rprx-vision`。
 - XHTTP 参数由 `nodes.xhttp_path`、`nodes.xhttp_host`、`nodes.xhttp_mode` 管理；订阅输出必须包含 `network/type=xhttp` 和 XHTTP 参数。
+- 管理后台新增节点和一键部署允许多选传输模式；单选时仍创建一条 `nodes`，多选时按每种传输模式创建一条逻辑 `nodes` 线路。
+- 同一 IP 同时选择 TCP 与 XHTTP 时必须使用不同端口；默认 TCP 443、XHTTP 8443，不能在同一个 Xray inbound 上混用两种 network。
 - 修改 XHTTP 字段、订阅格式、Xray `xhttpSettings` 或 node-agent 用户同步时，必须同步更新三份规则文件、`开发方案.md` 和相关接口/部署文档，并运行后端测试、前端构建和 Playwright smoke。
 
 ## 多出口 IP 与 multi_exit 规则
@@ -73,6 +75,7 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - 开启多 IP 模式后，必须先通过 SSH 扫描服务器公网 IPv4，并验证 `curl --interface <IP>` 的实际出口等于该 IP；只有管理员手动勾选确认的可用公网 IP 才能创建为逻辑出口节点。
 - 多 IP 模式下 `node_hosts` 表示一台物理服务器和唯一 node-agent 身份，`nodes` 表示逻辑出口节点；一个公网出口 IP 对应一条 `nodes` 记录。
 - multi_exit 模式只安装一个 `node-agent`，使用 `AGENT_ROLE=multi_exit`、`NODE_HOST_ID`、`NODE_HOST_TOKEN` 和 `MULTI_NODE_CONFIG` 管理同一物理服务器下的多个逻辑节点。
+- 即使不是多出口 IP，只要一键部署选择了多个传输模式，也必须按多逻辑节点处理，并在目标服务器只运行一个 multi_exit node-agent。
 - multi_exit 生成的 Xray 配置必须为每个逻辑节点创建独立 inbound/outbound：`listen` 绑定该节点 IP，`freedom.sendThrough` 也绑定同一 IP，避免双 IP 服务器出站归属漂移。
 - multi_exit 对中心仍必须按 `node_id` 分别心跳、领取任务、上报任务结果和用户级流量；中心账本、套餐授权和订阅生成继续以 `nodes.id` 为归属。
 - multi_exit 写入 Xray clients 时必须使用节点内部分隔的统计 email，避免同一用户跨多个逻辑节点的 Xray Stats 累计值混在一起；上报中心前再还原为原始 `xray_user_key`。

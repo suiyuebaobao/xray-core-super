@@ -74,16 +74,19 @@
         <el-form-item label="地址" prop="host">
           <el-input v-model="form.host" placeholder="例如：hk.example.com" />
         </el-form-item>
-        <el-form-item label="端口" prop="port">
-          <el-input-number v-model="form.port" :min="1" :max="65535" />
-        </el-form-item>
         <el-form-item label="传输模式">
-          <el-select v-model="form.transport" style="width: 100%" @change="ensureXHTTPDefaults(form)">
+          <el-select v-model="form.transports" multiple :multiple-limit="isEdit ? 1 : 2" style="width: 100%" @change="handleTransportSelectionChange(form)">
             <el-option label="TCP + Reality" value="tcp" />
             <el-option label="XHTTP + Reality" value="xhttp" />
           </el-select>
         </el-form-item>
-        <template v-if="form.transport === 'xhttp'">
+        <el-form-item v-if="hasTransport(form, 'tcp')" label="TCP 端口" prop="tcp_port">
+          <el-input-number v-model="form.tcp_port" :min="1" :max="65535" />
+        </el-form-item>
+        <template v-if="hasTransport(form, 'xhttp')">
+          <el-form-item label="XHTTP 端口" prop="xhttp_port">
+            <el-input-number v-model="form.xhttp_port" :min="1" :max="65535" />
+          </el-form-item>
           <el-form-item label="XHTTP Path">
             <el-input v-model="form.xhttp_path" placeholder="/raypilot" />
           </el-form-item>
@@ -157,12 +160,18 @@
           <el-input v-model="deployForm.node_token" placeholder="留空自动生成" />
         </el-form-item>
         <el-form-item label="传输模式">
-          <el-select v-model="deployForm.transport" style="width: 100%" @change="ensureXHTTPDefaults(deployForm)">
+          <el-select v-model="deployForm.transports" multiple :multiple-limit="2" style="width: 100%" @change="handleTransportSelectionChange(deployForm)">
             <el-option label="TCP + Reality" value="tcp" />
             <el-option label="XHTTP + Reality" value="xhttp" />
           </el-select>
         </el-form-item>
-        <template v-if="deployForm.transport === 'xhttp'">
+        <el-form-item v-if="hasTransport(deployForm, 'tcp')" label="TCP 端口">
+          <el-input-number v-model="deployForm.tcp_port" :min="1" :max="65535" />
+        </el-form-item>
+        <template v-if="hasTransport(deployForm, 'xhttp')">
+          <el-form-item label="XHTTP 端口">
+            <el-input-number v-model="deployForm.xhttp_port" :min="1" :max="65535" />
+          </el-form-item>
           <el-form-item label="XHTTP Path">
             <el-input v-model="deployForm.xhttp_path" placeholder="/raypilot" />
           </el-form-item>
@@ -256,8 +265,9 @@ const batchDeleting = ref(false)
 const form = reactive({
   name: '',
   host: '',
-  port: 443,
-  transport: 'tcp',
+  transports: ['tcp'],
+  tcp_port: 443,
+  xhttp_port: 443,
   xhttp_path: '/raypilot',
   xhttp_host: '',
   xhttp_mode: 'auto',
@@ -273,7 +283,8 @@ const form = reactive({
 const rules = {
   name: [{ required: true, message: '请输入节点名称', trigger: 'blur' }],
   host: [{ required: true, message: '请输入节点地址', trigger: 'blur' }],
-  port: [{ required: true, message: '请输入端口', trigger: 'blur' }],
+  tcp_port: [{ required: true, message: '请输入 TCP 端口', trigger: 'blur' }],
+  xhttp_port: [{ required: true, message: '请输入 XHTTP 端口', trigger: 'blur' }],
   agent_base_url: [{ required: true, message: '请输入 Agent 地址', trigger: 'blur' }],
   agent_token: [{
     required: true,
@@ -307,7 +318,9 @@ const deployForm = reactive({
   node_name: '',
   center_url: window.location.origin,
   node_token: '',
-  transport: 'tcp',
+  transports: ['tcp'],
+  tcp_port: 443,
+  xhttp_port: 443,
   xhttp_path: '/raypilot',
   xhttp_host: '',
   xhttp_mode: 'auto',
@@ -325,8 +338,7 @@ function showDeployDialog() {
   deploySteps.value = []
   scannedIps.value = []
   selectedDeployIps.value = []
-  if (!deployForm.transport) deployForm.transport = 'tcp'
-  ensureXHTTPDefaults(deployForm)
+  handleTransportSelectionChange(deployForm)
   deployDialogVisible.value = true
 }
 
@@ -385,6 +397,11 @@ async function handleDeploy() {
       ElMessage.warning('请先扫描并勾选要部署的出口 IP')
       return
     }
+    const transports = normalizedTransports(deployForm)
+    if (transports.includes('tcp') && transports.includes('xhttp') && deployForm.tcp_port === deployForm.xhttp_port) {
+      ElMessage.warning('TCP 和 XHTTP 端口不能相同')
+      return
+    }
     const payload = {
       ssh_host: deployForm.ssh_host,
       ssh_port: deployForm.ssh_port,
@@ -393,7 +410,10 @@ async function handleDeploy() {
       node_name: deployForm.node_name,
       center_url: deployForm.center_url,
       node_token: deployForm.node_token,
-      transport: deployForm.transport,
+      transports,
+      transport: transports[0],
+      tcp_port: deployForm.tcp_port,
+      xhttp_port: deployForm.xhttp_port,
       xhttp_path: deployForm.xhttp_path,
       xhttp_host: deployForm.xhttp_host,
       xhttp_mode: deployForm.xhttp_mode,
@@ -443,9 +463,31 @@ function transportLabel(transport) {
   return transport === 'xhttp' ? 'XHTTP' : 'TCP'
 }
 
-function ensureXHTTPDefaults(target) {
-  if (!target.transport) target.transport = 'tcp'
-  if (target.transport === 'xhttp') {
+function normalizedTransports(target) {
+  const values = selectedTransports(target)
+  return values.length ? values : ['tcp']
+}
+
+function selectedTransports(target) {
+  const values = Array.isArray(target.transports) ? target.transports : []
+  const set = new Set(values.filter((item) => item === 'tcp' || item === 'xhttp'))
+  return ['tcp', 'xhttp'].filter((item) => set.has(item))
+}
+
+function hasTransport(target, transport) {
+  return normalizedTransports(target).includes(transport)
+}
+
+function handleTransportSelectionChange(target) {
+  const transports = selectedTransports(target)
+  target.transports = transports
+  if (!transports.length) return
+  if (!target.tcp_port) target.tcp_port = 443
+  if (!target.xhttp_port) target.xhttp_port = 443
+  if (transports.includes('tcp') && transports.includes('xhttp') && target.tcp_port === target.xhttp_port) {
+    target.xhttp_port = target.tcp_port === 443 ? 8443 : target.tcp_port + 1
+  }
+  if (transports.includes('xhttp')) {
     if (!target.xhttp_path) target.xhttp_path = '/raypilot'
     if (!target.xhttp_mode) target.xhttp_mode = 'auto'
   }
@@ -466,8 +508,9 @@ function trafficSyncLabel(row) {
 function resetForm() {
   form.name = ''
   form.host = ''
-  form.port = 443
-  form.transport = 'tcp'
+  form.transports = ['tcp']
+  form.tcp_port = 443
+  form.xhttp_port = 443
   form.xhttp_path = '/raypilot'
   form.xhttp_host = ''
   form.xhttp_mode = 'auto'
@@ -492,8 +535,9 @@ function showEditDialog(row) {
   editingId.value = row.id
   form.name = row.name
   form.host = row.host
-  form.port = row.port
-  form.transport = row.transport || 'tcp'
+  form.transports = [row.transport || 'tcp']
+  form.tcp_port = (row.transport || 'tcp') === 'tcp' ? row.port : 443
+  form.xhttp_port = row.transport === 'xhttp' ? row.port : 443
   form.xhttp_path = row.xhttp_path || '/raypilot'
   form.xhttp_host = row.xhttp_host || ''
   form.xhttp_mode = row.xhttp_mode || 'auto'
@@ -513,11 +557,24 @@ async function handleSave() {
 
   saving.value = true
   try {
+    const transports = normalizedTransports(form)
+    if (isEdit.value && transports.length > 1) {
+      ElMessage.warning('编辑单条节点只能选择一种传输模式')
+      return
+    }
+    if (transports.includes('tcp') && transports.includes('xhttp') && form.tcp_port === form.xhttp_port) {
+      ElMessage.warning('TCP 和 XHTTP 端口不能相同')
+      return
+    }
+    const primaryTransport = transports[0]
     const payload = {
       name: form.name,
       host: form.host,
-      port: form.port,
-      transport: form.transport,
+      port: primaryTransport === 'xhttp' ? form.xhttp_port : form.tcp_port,
+      transports,
+      transport: primaryTransport,
+      tcp_port: form.tcp_port,
+      xhttp_port: form.xhttp_port,
       xhttp_path: form.xhttp_path,
       xhttp_host: form.xhttp_host,
       xhttp_mode: form.xhttp_mode,

@@ -82,6 +82,7 @@ const nodes = [
     id: 1,
     name: 'HK-01 Reality',
     protocol: 'vless',
+    transport: 'tcp',
     host: 'hk01.example.net',
     port: 443,
     server_name: 'www.microsoft.com',
@@ -102,6 +103,7 @@ const nodes = [
     id: 2,
     name: 'JP-01 Reality',
     protocol: 'vless',
+    transport: 'tcp',
     host: 'jp01.example.net',
     port: 443,
     server_name: 'www.microsoft.com',
@@ -122,6 +124,7 @@ const nodes = [
     id: 3,
     name: 'US-01 Relay Only',
     protocol: 'vless',
+    transport: 'tcp',
     host: 'us01.example.net',
     port: 443,
     server_name: 'www.microsoft.com',
@@ -138,9 +141,33 @@ const nodes = [
     traffic_error_count: 2,
     last_traffic_error: 'xray stats api timeout',
   },
+  {
+    id: 4,
+    name: 'HK-01 XHTTP',
+    protocol: 'vless',
+    transport: 'xhttp',
+    host: 'hk01.example.net',
+    port: 8443,
+    server_name: 'www.microsoft.com',
+    public_key: 'demo-public-key-hk01',
+    short_id: 'a1b2c3d4',
+    fingerprint: 'chrome',
+    flow: '',
+    line_mode: 'direct_and_relay',
+    xhttp_path: '/raypilot',
+    xhttp_mode: 'auto',
+    xhttp_host: 'cdn.example.net',
+    agent_base_url: 'http://hk01.example.net:8080',
+    is_enabled: true,
+    last_heartbeat_at: iso('2026-05-03T08:29:00Z'),
+    last_traffic_report_at: iso('2026-05-03T08:29:00Z'),
+    last_traffic_success_at: iso('2026-05-03T08:29:00Z'),
+    traffic_error_count: 0,
+    last_traffic_error: '',
+  },
 ]
 
-nodeGroups[0].nodes = [nodes[0], nodes[2]]
+nodeGroups[0].nodes = [nodes[0], nodes[2], nodes[3]]
 nodeGroups[1].nodes = [nodes[1]]
 nodeGroups[2].nodes = [nodes[0]]
 
@@ -688,6 +715,8 @@ async function main() {
     await page.getByRole('button', { name: '一键部署' }).click()
     await page.getByPlaceholder('例如：154.219.97.219').fill('203.0.113.10')
     await page.locator('.el-dialog input[type="password"]').fill('demo-password')
+    await page.locator('.el-dialog .el-select').filter({ hasText: 'TCP + Reality' }).click()
+    await page.locator('.el-select-dropdown:visible .el-select-dropdown__item').filter({ hasText: 'XHTTP + Reality' }).click()
     await page.locator('.el-dialog .el-switch').click()
     await page.getByRole('button', { name: '扫描出口 IP' }).click()
     await page.getByText('203.0.113.11').waitFor({ state: 'visible', timeout: 30_000 })

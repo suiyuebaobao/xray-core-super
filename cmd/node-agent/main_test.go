@@ -179,6 +179,28 @@ func TestBuildMultiExitXrayConfigMap_BindsListenAndSendThroughPerNode(t *testing
 	}
 }
 
+func TestLoadMultiNodeConfig_AllowsSameIPWithDifferentPorts(t *testing.T) {
+	t.Setenv("MULTI_NODE_CONFIG", `[
+		{"node_id": 1, "ip": "154.219.106.105", "port": 443, "transport": "tcp"},
+		{"node_id": 2, "ip": "154.219.106.105", "port": 8443, "transport": "xhttp", "xhttp_path": "raypilot"}
+	]`)
+	t.Setenv("MULTI_NODE_CONFIG_PATH", "")
+
+	nodes, err := loadMultiNodeConfig()
+	if err != nil {
+		t.Fatalf("loadMultiNodeConfig returned error: %v", err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("len(nodes) = %d, want 2", len(nodes))
+	}
+	if nodes[0].Transport != "tcp" || nodes[0].Port != 443 {
+		t.Fatalf("tcp node = %+v", nodes[0])
+	}
+	if nodes[1].Transport != "xhttp" || nodes[1].Port != 8443 || nodes[1].XHTTPPath != "/raypilot" {
+		t.Fatalf("xhttp node = %+v", nodes[1])
+	}
+}
+
 func TestBuildMultiExitXrayConfigMap_XHTTPStreamSettings(t *testing.T) {
 	cfg := buildMultiExitXrayConfigMap([]MultiExitNodeConfig{
 		{

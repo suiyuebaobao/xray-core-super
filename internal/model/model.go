@@ -291,24 +291,27 @@ func (Node) TableName() string {
 
 // CreateNodeRequest 创建节点请求。
 type CreateNodeRequest struct {
-	Name         string `json:"name" binding:"required"`
-	Protocol     string `json:"protocol" default:"vless"`
-	Transport    string `json:"transport" binding:"omitempty,oneof=tcp xhttp"`
-	Host         string `json:"host" binding:"required"`
-	Port         uint32 `json:"port" default:"443"`
-	ServerName   string `json:"server_name"`
-	PublicKey    string `json:"public_key"`
-	ShortID      string `json:"short_id"`
-	Fingerprint  string `json:"fingerprint" default:"chrome"`
-	Flow         string `json:"flow" default:"xtls-rprx-vision"`
-	LineMode     string `json:"line_mode" binding:"omitempty,oneof=direct_only relay_only direct_and_relay"`
-	XHTTPPath    string `json:"xhttp_path"`
-	XHTTPHost    string `json:"xhttp_host"`
-	XHTTPMode    string `json:"xhttp_mode" binding:"omitempty,oneof=auto packet-up stream-up stream-one"`
-	AgentBaseURL string `json:"agent_base_url" binding:"required"`
-	AgentToken   string `json:"agent_token" binding:"required"`
-	SortWeight   int    `json:"sort_weight"`
-	IsEnabled    bool   `json:"is_enabled"`
+	Name         string   `json:"name" binding:"required"`
+	Protocol     string   `json:"protocol" default:"vless"`
+	Transport    string   `json:"transport" binding:"omitempty,oneof=tcp xhttp"`
+	Transports   []string `json:"transports" binding:"omitempty,dive,oneof=tcp xhttp"`
+	Host         string   `json:"host" binding:"required"`
+	Port         uint32   `json:"port" default:"443"`
+	TCPPort      uint32   `json:"tcp_port"`
+	XHTTPPort    uint32   `json:"xhttp_port"`
+	ServerName   string   `json:"server_name"`
+	PublicKey    string   `json:"public_key"`
+	ShortID      string   `json:"short_id"`
+	Fingerprint  string   `json:"fingerprint" default:"chrome"`
+	Flow         string   `json:"flow" default:"xtls-rprx-vision"`
+	LineMode     string   `json:"line_mode" binding:"omitempty,oneof=direct_only relay_only direct_and_relay"`
+	XHTTPPath    string   `json:"xhttp_path"`
+	XHTTPHost    string   `json:"xhttp_host"`
+	XHTTPMode    string   `json:"xhttp_mode" binding:"omitempty,oneof=auto packet-up stream-up stream-one"`
+	AgentBaseURL string   `json:"agent_base_url" binding:"required"`
+	AgentToken   string   `json:"agent_token" binding:"required"`
+	SortWeight   int      `json:"sort_weight"`
+	IsEnabled    bool     `json:"is_enabled"`
 }
 
 // UpdateNodeRequest 更新节点请求。

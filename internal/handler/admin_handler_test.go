@@ -55,6 +55,7 @@ func setupTestAdminApp(t *testing.T) (*gin.Engine, string) {
 		&model.Plan{},
 		&model.NodeGroup{},
 		&model.NodeGroupNode{},
+		&model.NodeHost{},
 		&model.Node{},
 		&model.NodeAccessTask{},
 		&model.RedeemCode{},
@@ -105,7 +106,7 @@ func setupTestAdminApp(t *testing.T) (*gin.Engine, string) {
 	planHandler := handler.NewPlanHandler(planSvc)
 	adminPlanHandler := handler.NewAdminPlanHandler(planRepo)
 	adminNodeGroupHandler := handler.NewAdminNodeGroupHandlerWithNodes(nodeGroupRepo, nodeRepo, nil)
-	adminNodeHandler := handler.NewAdminNodeHandler(nodeRepo)
+	adminNodeHandler := handler.NewAdminNodeHandlerWithSync(nodeRepo, subRepo, nil, repository.NewNodeHostRepository(db))
 	adminUserHandler := handler.NewAdminUserHandlerWithSubscription(userRepo, subRepo, tokenRepo, planRepo, nil, cfg.BCryptRounds, cfg.XrayUserKeyDomain)
 	usageHandler := handler.NewUsageHandler(repository.NewUsageLedgerRepository(db), userRepo, subRepo, planRepo)
 
@@ -187,6 +188,7 @@ func setupTestAdminAppWithDB(t *testing.T) (*gin.Engine, string, *gorm.DB) {
 		&model.Plan{},
 		&model.NodeGroup{},
 		&model.NodeGroupNode{},
+		&model.NodeHost{},
 		&model.Node{},
 		&model.NodeAccessTask{},
 		&model.RedeemCode{},
@@ -237,7 +239,7 @@ func setupTestAdminAppWithDB(t *testing.T) (*gin.Engine, string, *gorm.DB) {
 	planHandler := handler.NewPlanHandler(planSvc)
 	adminPlanHandler := handler.NewAdminPlanHandler(planRepo)
 	adminNodeGroupHandler := handler.NewAdminNodeGroupHandlerWithNodes(nodeGroupRepo, nodeRepo, nil)
-	adminNodeHandler := handler.NewAdminNodeHandler(nodeRepo)
+	adminNodeHandler := handler.NewAdminNodeHandlerWithSync(nodeRepo, subRepo, nil, repository.NewNodeHostRepository(db))
 	adminUserHandler := handler.NewAdminUserHandlerWithSubscription(userRepo, subRepo, tokenRepo, planRepo, nil, cfg.BCryptRounds, cfg.XrayUserKeyDomain)
 	usageHandler := handler.NewUsageHandler(repository.NewUsageLedgerRepository(db), userRepo, subRepo, planRepo)
 
@@ -794,6 +796,50 @@ func TestAdminHandler_CreateNode_XHTTPNormalizesTransport(t *testing.T) {
 	assert.Equal(t, "stream-up", data["xhttp_mode"])
 	assert.Equal(t, "cdn.example.com", data["xhttp_host"])
 	assert.Equal(t, "", data["flow"])
+}
+
+func TestAdminHandler_CreateNode_MultipleTransportsCreatesLogicalNodes(t *testing.T) {
+	r, token := setupTestAdminApp(t)
+
+	body := map[string]interface{}{
+		"name":           "multi-transport-node",
+		"protocol":       "vless",
+		"host":           "203.0.113.20",
+		"transports":     []string{"tcp", "xhttp"},
+		"tcp_port":       443,
+		"xhttp_port":     8443,
+		"xhttp_path":     "/raypilot-xhttp",
+		"xhttp_mode":     "auto",
+		"agent_base_url": "http://203.0.113.20:18080",
+		"agent_token":    "secret-token",
+		"server_name":    "www.microsoft.com",
+		"is_enabled":     true,
+	}
+	jsonBody, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/nodes", bytes.NewReader(jsonBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data := resp["data"].(map[string]interface{})
+	nodes := data["nodes"].([]interface{})
+	require.Len(t, nodes, 2)
+	tcpNode := nodes[0].(map[string]interface{})
+	xhttpNode := nodes[1].(map[string]interface{})
+	assert.Equal(t, "tcp", tcpNode["transport"])
+	assert.Equal(t, float64(443), tcpNode["port"])
+	assert.Equal(t, "multi-transport-node", tcpNode["name"])
+	assert.Equal(t, "xtls-rprx-vision", tcpNode["flow"])
+	assert.Equal(t, "xhttp", xhttpNode["transport"])
+	assert.Equal(t, float64(8443), xhttpNode["port"])
+	assert.Equal(t, "multi-transport-node-XHTTP", xhttpNode["name"])
+	assert.Equal(t, "", xhttpNode["flow"])
+	assert.Equal(t, "/raypilot-xhttp", xhttpNode["xhttp_path"])
+	assert.NotNil(t, data["node_host"])
 }
 
 // TestAdminHandler_ListNodes 测试列出节点。

@@ -201,7 +201,7 @@ func loadMultiNodeConfig() ([]MultiExitNodeConfig, error) {
 		return nil, fmt.Errorf("parse multi node config: %w", err)
 	}
 	seenIDs := map[uint64]struct{}{}
-	seenIPs := map[string]struct{}{}
+	seenEndpoints := map[string]struct{}{}
 	for i := range nodes {
 		if nodes[i].NodeID == 0 {
 			return nil, fmt.Errorf("node_id is required")
@@ -215,16 +215,17 @@ func loadMultiNodeConfig() ([]MultiExitNodeConfig, error) {
 			return nil, fmt.Errorf("invalid node ip for node %d", nodes[i].NodeID)
 		}
 		nodes[i].IP = ip.To4().String()
-		if _, exists := seenIPs[nodes[i].IP]; exists {
-			return nil, fmt.Errorf("duplicate node ip: %s", nodes[i].IP)
-		}
-		seenIPs[nodes[i].IP] = struct{}{}
 		if nodes[i].Port == 0 {
 			nodes[i].Port = 443
 		}
 		if nodes[i].Port > 65535 {
 			return nil, fmt.Errorf("invalid node port for node %d: %d", nodes[i].NodeID, nodes[i].Port)
 		}
+		endpoint := fmt.Sprintf("%s:%d", nodes[i].IP, nodes[i].Port)
+		if _, exists := seenEndpoints[endpoint]; exists {
+			return nil, fmt.Errorf("duplicate node listen endpoint: %s", endpoint)
+		}
+		seenEndpoints[endpoint] = struct{}{}
 		nodes[i].Transport = normalizeAgentTransport(nodes[i].Transport)
 		nodes[i].XHTTPPath = normalizeAgentXHTTPPath(nodes[i].XHTTPPath)
 		nodes[i].XHTTPHost = strings.TrimSpace(nodes[i].XHTTPHost)

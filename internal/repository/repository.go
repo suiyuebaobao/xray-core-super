@@ -1322,12 +1322,26 @@ func (r *NodeRepository) Update(ctx context.Context, node *model.Node) error {
 // Delete 删除节点。
 func (r *NodeRepository) Delete(ctx context.Context, id uint64) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var node model.Node
+		_ = tx.First(&node, id).Error
 		if tx.Migrator().HasTable(&model.NodeGroupNode{}) {
 			if err := tx.Where("node_id = ?", id).Delete(&model.NodeGroupNode{}).Error; err != nil {
 				return err
 			}
 		}
-		return tx.Delete(&model.Node{}, id).Error
+		if err := tx.Delete(&model.Node{}, id).Error; err != nil {
+			return err
+		}
+		if node.NodeHostID != nil {
+			var remaining int64
+			if err := tx.Model(&model.Node{}).Where("node_host_id = ?", *node.NodeHostID).Count(&remaining).Error; err != nil {
+				return err
+			}
+			if remaining == 0 {
+				return tx.Delete(&model.NodeHost{}, *node.NodeHostID).Error
+			}
+		}
+		return nil
 	})
 }
 

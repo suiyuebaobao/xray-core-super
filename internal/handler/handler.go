@@ -22,12 +22,17 @@ import (
 
 // AuthHandler 认证相关处理器。
 type AuthHandler struct {
-	authSvc *service.AuthService
+	authSvc         *service.AuthService
+	operationLogSvc *service.OperationLogService
 }
 
 // NewAuthHandler 创建认证处理器。
-func NewAuthHandler(authSvc *service.AuthService) *AuthHandler {
-	return &AuthHandler{authSvc: authSvc}
+func NewAuthHandler(authSvc *service.AuthService, operationLogSvc ...*service.OperationLogService) *AuthHandler {
+	var logSvc *service.OperationLogService
+	if len(operationLogSvc) > 0 {
+		logSvc = operationLogSvc[0]
+	}
+	return &AuthHandler{authSvc: authSvc, operationLogSvc: logSvc}
 }
 
 // Register 处理 POST /api/auth/register。
@@ -40,10 +45,12 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 	user, err := h.authSvc.Register(c.Request.Context(), &req)
 	if err != nil {
+		h.recordAuthOperation(c, "register", "failed", "用户注册失败", nil, map[string]interface{}{"username": req.Username})
 		response.HandleError(c, err)
 		return
 	}
 
+	h.recordAuthOperation(c, "register", "success", "用户注册成功", &user.ID, map[string]interface{}{"username": user.Username})
 	response.Success(c, gin.H{"user": user})
 }
 
@@ -57,12 +64,15 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	resp, refreshToken, err := h.authSvc.Login(c.Request.Context(), &req, c.ClientIP())
 	if err != nil {
+		h.recordAuthOperation(c, "login", "failed", "用户登录失败", nil, map[string]interface{}{"username": req.Username})
 		response.HandleError(c, err)
 		return
 	}
 
 	setRefreshTokenCookie(c, refreshToken, int(24*60*60*7))
 
+	userID := resp.User.ID
+	h.recordAuthOperation(c, "login", "success", "用户登录成功", &userID, map[string]interface{}{"username": resp.User.Username})
 	response.Success(c, gin.H{
 		"accessToken": resp.AccessToken,
 		"user":        resp.User,
@@ -98,6 +108,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 
 	clearRefreshTokenCookie(c)
 
+	h.recordAuthOperation(c, "logout", "success", "用户退出登录", nil, nil)
 	response.Success(c, nil)
 }
 
@@ -121,15 +132,31 @@ func isSecureRequest(c *gin.Context) bool {
 	return true
 }
 
+func (h *AuthHandler) recordAuthOperation(c *gin.Context, action, result, summary string, targetID *uint64, extra interface{}) {
+	if h == nil || h.operationLogSvc == nil {
+		return
+	}
+	ctx := buildClientLogContext(c)
+	targetType := "user"
+	var targetTypePtr *string
+	targetTypePtr = &targetType
+	_ = h.operationLogSvc.Record(c.Request.Context(), ctx, "user", action, result, summary, targetTypePtr, targetID, extra)
+}
+
 // UserHandler 用户相关处理器。
 type UserHandler struct {
-	userSvc   *service.UserService
-	tokenRepo *repository.SubscriptionTokenRepository
+	userSvc         *service.UserService
+	tokenRepo       *repository.SubscriptionTokenRepository
+	operationLogSvc *service.OperationLogService
 }
 
 // NewUserHandler 创建用户处理器。
-func NewUserHandler(userSvc *service.UserService, tokenRepo *repository.SubscriptionTokenRepository) *UserHandler {
-	return &UserHandler{userSvc: userSvc, tokenRepo: tokenRepo}
+func NewUserHandler(userSvc *service.UserService, tokenRepo *repository.SubscriptionTokenRepository, operationLogSvc ...*service.OperationLogService) *UserHandler {
+	var logSvc *service.OperationLogService
+	if len(operationLogSvc) > 0 {
+		logSvc = operationLogSvc[0]
+	}
+	return &UserHandler{userSvc: userSvc, tokenRepo: tokenRepo, operationLogSvc: logSvc}
 }
 
 // GetMe 处理 GET /api/user/me。
@@ -202,10 +229,12 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 
 	user, err := h.userSvc.UpdateProfile(c.Request.Context(), userID, req.Email)
 	if err != nil {
+		h.recordUserOperation(c, "update_profile", "failed", "用户修改资料失败", &userID, nil)
 		response.HandleError(c, err)
 		return
 	}
 
+	h.recordUserOperation(c, "update_profile", "success", "用户修改资料成功", &userID, nil)
 	response.Success(c, gin.H{"user": user})
 }
 
@@ -227,11 +256,22 @@ func (h *UserHandler) ChangePassword(c *gin.Context) {
 	}
 
 	if err := h.userSvc.ChangePassword(c.Request.Context(), userID, req.OldPassword, req.NewPassword); err != nil {
+		h.recordUserOperation(c, "change_password", "failed", "用户修改密码失败", &userID, nil)
 		response.HandleError(c, err)
 		return
 	}
 
+	h.recordUserOperation(c, "change_password", "success", "用户修改密码成功", &userID, nil)
 	response.Success(c, nil)
+}
+
+func (h *UserHandler) recordUserOperation(c *gin.Context, action, result, summary string, targetID *uint64, extra interface{}) {
+	if h == nil || h.operationLogSvc == nil {
+		return
+	}
+	ctx := buildClientLogContext(c)
+	targetType := "user"
+	_ = h.operationLogSvc.Record(c.Request.Context(), ctx, "user", action, result, summary, &targetType, targetID, extra)
 }
 
 // PlanHandler 套餐相关处理器。

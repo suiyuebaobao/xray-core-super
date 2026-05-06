@@ -55,6 +55,8 @@ type RelayDeployRequest struct {
 type RelayDeployResult struct {
 	RelayID    uint64   `json:"relay_id"`
 	BackendIDs []uint64 `json:"backend_ids,omitempty"`
+	TargetHost string   `json:"target_host,omitempty"`
+	TargetPort uint32   `json:"target_port,omitempty"`
 	RelayToken string   `json:"relay_token,omitempty"`
 	Success    bool     `json:"success"`
 	Message    string   `json:"message"`
@@ -196,6 +198,16 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 
 	result.RelayID = relay.ID
 	result.BackendIDs = backendIDs
+	if req.ExitNodeID > 0 && s.nodeRepo != nil {
+		if exitNode, findErr := s.nodeRepo.FindByID(ctx, req.ExitNodeID); findErr == nil {
+			result.TargetHost = exitNode.Host
+			if req.TargetPort > 0 {
+				result.TargetPort = req.TargetPort
+			} else {
+				result.TargetPort = exitNode.Port
+			}
+		}
+	}
 	result.Success = true
 	result.Message = "部署成功"
 	log.Printf("[relay-deploy] relay %s deployed successfully on %s, relay_id=%d", relayName, req.SSHHost, relay.ID)

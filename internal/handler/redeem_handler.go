@@ -28,21 +28,27 @@ const redeemCodeCharset = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 // RedeemHandler 兑换码用户侧处理器。
 type RedeemHandler struct {
-	redeemRepo    *repository.RedeemCodeRepository
-	subRepo       *repository.SubscriptionRepository
-	planRepo      *repository.PlanRepository
-	tokenRepo     *repository.SubscriptionTokenRepository
-	nodeAccessSvc *service.NodeAccessService
+	redeemRepo      *repository.RedeemCodeRepository
+	subRepo         *repository.SubscriptionRepository
+	planRepo        *repository.PlanRepository
+	tokenRepo       *repository.SubscriptionTokenRepository
+	nodeAccessSvc   *service.NodeAccessService
+	operationLogSvc *service.OperationLogService
 }
 
 // NewRedeemHandler 创建兑换码处理器。
-func NewRedeemHandler(redeemRepo *repository.RedeemCodeRepository, subRepo *repository.SubscriptionRepository, planRepo *repository.PlanRepository, tokenRepo *repository.SubscriptionTokenRepository, nodeAccessSvc *service.NodeAccessService) *RedeemHandler {
+func NewRedeemHandler(redeemRepo *repository.RedeemCodeRepository, subRepo *repository.SubscriptionRepository, planRepo *repository.PlanRepository, tokenRepo *repository.SubscriptionTokenRepository, nodeAccessSvc *service.NodeAccessService, operationLogSvc ...*service.OperationLogService) *RedeemHandler {
+	var logSvc *service.OperationLogService
+	if len(operationLogSvc) > 0 {
+		logSvc = operationLogSvc[0]
+	}
 	return &RedeemHandler{
-		redeemRepo:    redeemRepo,
-		subRepo:       subRepo,
-		planRepo:      planRepo,
-		tokenRepo:     tokenRepo,
-		nodeAccessSvc: nodeAccessSvc,
+		redeemRepo:      redeemRepo,
+		subRepo:         subRepo,
+		planRepo:        planRepo,
+		tokenRepo:       tokenRepo,
+		nodeAccessSvc:   nodeAccessSvc,
+		operationLogSvc: logSvc,
 	}
 }
 
@@ -164,8 +170,10 @@ func (h *RedeemHandler) Redeem(c *gin.Context) {
 
 	if err != nil {
 		if err.Error() == "兑换码已使用或已过期" {
+			h.recordRedeemOperation(c, "redeem_code", "failed", "兑换码兑换失败", nil, map[string]interface{}{"code": req.Code})
 			response.HandleError(c, &response.AppError{Code: 40006, HTTPCode: http.StatusBadRequest, Message: "兑换码已使用或已过期"})
 		} else {
+			h.recordRedeemOperation(c, "redeem_code", "failed", "兑换码兑换失败", nil, map[string]interface{}{"code": req.Code})
 			response.HandleError(c, response.ErrInternalServer)
 		}
 		return
@@ -192,17 +200,23 @@ func (h *RedeemHandler) Redeem(c *gin.Context) {
 		}
 	}()
 
+	h.recordRedeemOperation(c, "redeem_code", "success", "兑换码兑换成功", &code.ID, map[string]interface{}{"plan_id": code.PlanID})
 	response.Success(c, gin.H{"message": "兑换成功"})
 }
 
 // AdminRedeemHandler 管理后台兑换码处理器。
 type AdminRedeemHandler struct {
-	redeemRepo *repository.RedeemCodeRepository
+	redeemRepo      *repository.RedeemCodeRepository
+	operationLogSvc *service.OperationLogService
 }
 
 // NewAdminRedeemHandler 创建管理后台兑换码处理器。
-func NewAdminRedeemHandler(redeemRepo *repository.RedeemCodeRepository) *AdminRedeemHandler {
-	return &AdminRedeemHandler{redeemRepo: redeemRepo}
+func NewAdminRedeemHandler(redeemRepo *repository.RedeemCodeRepository, operationLogSvc ...*service.OperationLogService) *AdminRedeemHandler {
+	var logSvc *service.OperationLogService
+	if len(operationLogSvc) > 0 {
+		logSvc = operationLogSvc[0]
+	}
+	return &AdminRedeemHandler{redeemRepo: redeemRepo, operationLogSvc: logSvc}
 }
 
 // Generate 处理 POST /api/admin/redeem-codes — 批量生成兑换码。
@@ -235,6 +249,7 @@ func (h *AdminRedeemHandler) Generate(c *gin.Context) {
 		codes = append(codes, code)
 	}
 
+	h.recordAdminRedeemOperation(c, "generate_redeem_codes", "success", "管理员生成兑换码", nil, map[string]interface{}{"plan_id": req.PlanID, "count": len(codes)})
 	response.Success(c, gin.H{"codes": codes, "count": len(codes)})
 }
 
@@ -254,4 +269,22 @@ func (h *AdminRedeemHandler) List(c *gin.Context) {
 		"page":  page,
 		"size":  size,
 	})
+}
+
+func (h *RedeemHandler) recordRedeemOperation(c *gin.Context, action, result, summary string, targetID *uint64, extra interface{}) {
+	if h == nil || h.operationLogSvc == nil {
+		return
+	}
+	ctx := buildClientLogContext(c)
+	targetType := "redeem_code"
+	_ = h.operationLogSvc.Record(c.Request.Context(), ctx, "user", action, result, summary, &targetType, targetID, extra)
+}
+
+func (h *AdminRedeemHandler) recordAdminRedeemOperation(c *gin.Context, action, result, summary string, targetID *uint64, extra interface{}) {
+	if h == nil || h.operationLogSvc == nil {
+		return
+	}
+	ctx := buildClientLogContext(c)
+	targetType := "redeem_code"
+	_ = h.operationLogSvc.Record(c.Request.Context(), ctx, "admin", action, result, summary, &targetType, targetID, extra)
 }

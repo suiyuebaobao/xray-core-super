@@ -18,12 +18,17 @@ import (
 
 // OrderHandler 订单用户侧处理器。
 type OrderHandler struct {
-	orderSvc *service.OrderService
+	orderSvc        *service.OrderService
+	operationLogSvc *service.OperationLogService
 }
 
 // NewOrderHandler 创建订单处理器。
-func NewOrderHandler(orderSvc *service.OrderService) *OrderHandler {
-	return &OrderHandler{orderSvc: orderSvc}
+func NewOrderHandler(orderSvc *service.OrderService, operationLogSvc ...*service.OperationLogService) *OrderHandler {
+	var logSvc *service.OperationLogService
+	if len(operationLogSvc) > 0 {
+		logSvc = operationLogSvc[0]
+	}
+	return &OrderHandler{orderSvc: orderSvc, operationLogSvc: logSvc}
 }
 
 // Create 处理 POST /api/orders — 创建订单。
@@ -42,10 +47,12 @@ func (h *OrderHandler) Create(c *gin.Context) {
 
 	order, err := h.orderSvc.CreateOrder(c.Request.Context(), userID, req.PlanID)
 	if err != nil {
+		h.recordOrderOperation(c, "create_order", "failed", "用户创建订单失败", nil, map[string]interface{}{"plan_id": req.PlanID})
 		response.HandleError(c, err)
 		return
 	}
 
+	h.recordOrderOperation(c, "create_order", "success", "用户创建订单成功", &order.ID, map[string]interface{}{"plan_id": req.PlanID})
 	response.Success(c, gin.H{"order": order})
 }
 
@@ -71,6 +78,15 @@ func (h *OrderHandler) List(c *gin.Context) {
 		"page":   page,
 		"size":   size,
 	})
+}
+
+func (h *OrderHandler) recordOrderOperation(c *gin.Context, action, result, summary string, targetID *uint64, extra interface{}) {
+	if h == nil || h.operationLogSvc == nil {
+		return
+	}
+	ctx := buildClientLogContext(c)
+	targetType := "order"
+	_ = h.operationLogSvc.Record(c.Request.Context(), ctx, "user", action, result, summary, &targetType, targetID, extra)
 }
 
 // AdminOrderHandler 管理后台订单处理器。

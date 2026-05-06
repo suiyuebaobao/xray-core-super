@@ -39,6 +39,10 @@
           <el-icon><Key /></el-icon>
           <span>订阅 Token</span>
         </el-menu-item>
+        <el-menu-item index="/admin/logs">
+          <el-icon><Document /></el-icon>
+          <span>日志中心</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>

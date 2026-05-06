@@ -69,6 +69,7 @@ test('admin and user pages render against live API', async ({ page }) => {
     ['/admin/orders', '订单管理'],
     ['/admin/redeem-codes', '兑换码管理'],
     ['/admin/subscription-tokens', '订阅 Token 管理'],
+    ['/admin/logs', '日志中心'],
   ]
 
   for (const [path, text] of adminPages) {

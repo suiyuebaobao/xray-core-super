@@ -28,6 +28,7 @@ import (
 	"suiyue/internal/platform/response"
 	"suiyue/internal/platform/secure"
 	"suiyue/internal/repository"
+	"suiyue/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -949,6 +950,7 @@ type AdminUserHandler struct {
 	nodeAccessSvc     nodeAccessSubscriptionSyncer
 	bcryptRounds      int
 	xrayUserKeyDomain string
+	operationLogSvc   *service.OperationLogService
 }
 
 // NewAdminUserHandler 创建管理后台用户处理器。
@@ -968,15 +970,22 @@ func NewAdminUserHandlerWithSubscription(
 	planRepo *repository.PlanRepository,
 	nodeAccessSvc nodeAccessSubscriptionSyncer,
 	bcryptRounds int,
-	xrayUserKeyDomain ...string,
+	extras ...interface{},
 ) *AdminUserHandler {
 	h := NewAdminUserHandler(userRepo, bcryptRounds)
 	h.subRepo = subRepo
 	h.tokenRepo = tokenRepo
 	h.planRepo = planRepo
 	h.nodeAccessSvc = nodeAccessSvc
-	if len(xrayUserKeyDomain) > 0 && xrayUserKeyDomain[0] != "" {
-		h.xrayUserKeyDomain = xrayUserKeyDomain[0]
+	for _, extra := range extras {
+		switch v := extra.(type) {
+		case *service.OperationLogService:
+			h.operationLogSvc = v
+		case string:
+			if v != "" {
+				h.xrayUserKeyDomain = v
+			}
+		}
 	}
 	return h
 }
@@ -1155,6 +1164,7 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 		return
 	}
 
+	h.recordAdminUserOperation(c, "admin_create_user", "success", "管理员新增用户", &user.ID, map[string]interface{}{"username": user.Username})
 	response.Success(c, user.ToPublic())
 }
 
@@ -1207,6 +1217,7 @@ func (h *AdminUserHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	h.recordAdminUserOperation(c, "admin_delete_user", "success", "管理员删除用户", &id, nil)
 	response.Success(c, nil)
 }
 
@@ -1233,6 +1244,7 @@ func (h *AdminUserHandler) ToggleStatus(c *gin.Context) {
 
 	h.syncUserStatusToNodes(c.Request.Context(), id, req.Status)
 
+	h.recordAdminUserOperation(c, "admin_toggle_user_status", "success", "管理员切换用户状态", &id, map[string]interface{}{"status": req.Status})
 	response.Success(c, nil)
 }
 
@@ -1282,6 +1294,7 @@ func (h *AdminUserHandler) ResetPassword(c *gin.Context) {
 		return
 	}
 
+	h.recordAdminUserOperation(c, "admin_reset_password", "success", "管理员重置用户密码", &id, nil)
 	response.Success(c, nil)
 }
 
@@ -1452,7 +1465,17 @@ func (h *AdminUserHandler) UpsertSubscription(c *gin.Context) {
 	if err != nil {
 		tokens = []model.SubscriptionToken{}
 	}
+	h.recordAdminUserOperation(c, "admin_upsert_subscription", "success", "管理员调整用户订阅", &userID, map[string]interface{}{"plan_id": req.PlanID, "status": req.Status})
 	response.Success(c, gin.H{"subscription": savedSub, "tokens": tokens})
+}
+
+func (h *AdminUserHandler) recordAdminUserOperation(c *gin.Context, action, result, summary string, targetID *uint64, extra interface{}) {
+	if h == nil || h.operationLogSvc == nil {
+		return
+	}
+	ctx := buildClientLogContext(c)
+	targetType := "user"
+	_ = h.operationLogSvc.Record(c.Request.Context(), ctx, "admin", action, result, summary, &targetType, targetID, extra)
 }
 
 func (h *AdminUserHandler) syncSubscriptionChange(ctx context.Context, userID uint64, oldSub *model.UserSubscription, newSub *model.UserSubscription, created bool) {

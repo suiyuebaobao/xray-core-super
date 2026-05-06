@@ -6,8 +6,11 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -257,6 +260,201 @@ func (r *UserRepository) SearchByUsername(ctx context.Context, keyword string, p
 func escapeLike(value string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return replacer.Replace(value)
+}
+
+// OperationLogRepository 操作日志数据访问。
+type OperationLogRepository struct {
+	db *gorm.DB
+}
+
+func NewOperationLogRepository(db *gorm.DB) *OperationLogRepository {
+	return &OperationLogRepository{db: db}
+}
+
+func (r *OperationLogRepository) Create(ctx context.Context, log *model.OperationLog) error {
+	return r.db.WithContext(ctx).Create(log).Error
+}
+
+func (r *OperationLogRepository) List(ctx context.Context, page, size int, actorType, action, keyword string) ([]model.OperationLog, int64, error) {
+	var logs []model.OperationLog
+	var total int64
+	q := r.db.WithContext(ctx).Model(&model.OperationLog{})
+	if actorType != "" {
+		q = q.Where("actor_type = ?", actorType)
+	}
+	if action != "" {
+		q = q.Where("action = ?", action)
+	}
+	if keyword != "" {
+		like := "%" + escapeLike(keyword) + "%"
+		q = q.Where("summary LIKE ? ESCAPE ? OR actor_username LIKE ? ESCAPE ? OR client_ip LIKE ? ESCAPE ?", like, `\`, like, `\`, like, `\`)
+	}
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	offset := (page - 1) * size
+	err := q.Order("id DESC").Offset(offset).Limit(size).Find(&logs).Error
+	return logs, total, err
+}
+
+// DeploymentLogRepository 部署日志数据访问。
+type DeploymentLogRepository struct {
+	db *gorm.DB
+}
+
+func NewDeploymentLogRepository(db *gorm.DB) *DeploymentLogRepository {
+	return &DeploymentLogRepository{db: db}
+}
+
+func (r *DeploymentLogRepository) Create(ctx context.Context, log *model.DeploymentLog) error {
+	return r.db.WithContext(ctx).Create(log).Error
+}
+
+func (r *DeploymentLogRepository) CreateWithSteps(ctx context.Context, log *model.DeploymentLog, steps []model.DeploymentLogStep) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(log).Error; err != nil {
+			return err
+		}
+		for i := range steps {
+			steps[i].DeploymentLogID = log.ID
+			steps[i].StepOrder = i
+		}
+		if len(steps) > 0 {
+			if err := tx.Create(&steps).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (r *DeploymentLogRepository) List(ctx context.Context, page, size int, deployType, result, keyword string) ([]model.DeploymentLog, int64, error) {
+	var logs []model.DeploymentLog
+	var total int64
+	q := r.db.WithContext(ctx).Model(&model.DeploymentLog{})
+	if deployType != "" {
+		q = q.Where("deploy_type = ?", deployType)
+	}
+	if result != "" {
+		q = q.Where("result = ?", result)
+	}
+	if keyword != "" {
+		like := "%" + escapeLike(keyword) + "%"
+		q = q.Where("target_server_ip LIKE ? ESCAPE ? OR operator_username LIKE ? ESCAPE ? OR error_detail LIKE ? ESCAPE ?", like, `\`, like, `\`, like, `\`)
+	}
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	offset := (page - 1) * size
+	err := q.Preload("Steps").Order("id DESC").Offset(offset).Limit(size).Find(&logs).Error
+	return logs, total, err
+}
+
+// RuntimeLogSource 运行日志来源。
+type RuntimeLogSource string
+
+const (
+	RuntimeLogSourceAPI    RuntimeLogSource = "api"
+	RuntimeLogSourceWorker RuntimeLogSource = "worker"
+)
+
+// RuntimeLogLine 运行日志单行。
+type RuntimeLogLine struct {
+	LineNumber int    `json:"line_number"`
+	Level      string `json:"level"`
+	Message    string `json:"message"`
+	Raw        string `json:"raw"`
+}
+
+// RuntimeLogReader 读取宿主机日志文件。
+type RuntimeLogReader struct {
+	baseDir string
+}
+
+func NewRuntimeLogReader(baseDir string) *RuntimeLogReader {
+	return &RuntimeLogReader{baseDir: baseDir}
+}
+
+func (r *RuntimeLogReader) Read(source RuntimeLogSource, lineCount int, keyword string) ([]RuntimeLogLine, error) {
+	if lineCount <= 0 {
+		lineCount = 100
+	}
+	if lineCount > 2000 {
+		lineCount = 2000
+	}
+	path, err := r.resolvePath(source)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	if keyword != "" {
+		filtered := make([]string, 0, len(lines))
+		for _, line := range lines {
+			if strings.Contains(strings.ToLower(line), strings.ToLower(keyword)) {
+				filtered = append(filtered, line)
+			}
+		}
+		lines = filtered
+	}
+	if len(lines) > lineCount {
+		lines = lines[len(lines)-lineCount:]
+	}
+	result := make([]RuntimeLogLine, 0, len(lines))
+	for idx, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		result = append(result, RuntimeLogLine{
+			LineNumber: idx + 1,
+			Level:      detectLogLevel(line),
+			Message:    line,
+			Raw:        line,
+		})
+	}
+	return result, nil
+}
+
+func (r *RuntimeLogReader) resolvePath(source RuntimeLogSource) (string, error) {
+	switch source {
+	case RuntimeLogSourceAPI:
+		return filepath.Join(r.baseDir, "api.log"), nil
+	case RuntimeLogSourceWorker:
+		return filepath.Join(r.baseDir, "worker.log"), nil
+	default:
+		return "", fmt.Errorf("unsupported runtime log source: %s", source)
+	}
+}
+
+func detectLogLevel(line string) string {
+	lower := strings.ToLower(line)
+	switch {
+	case strings.Contains(lower, " fatal"), strings.Contains(lower, "[fatal]"):
+		return "fatal"
+	case strings.Contains(lower, " panic"), strings.Contains(lower, "[panic]"):
+		return "panic"
+	case strings.Contains(lower, " error"), strings.Contains(lower, "[error]"), strings.Contains(lower, " failed"):
+		return "error"
+	case strings.Contains(lower, " warn"), strings.Contains(lower, "[warn]"):
+		return "warn"
+	default:
+		return "info"
+	}
+}
+
+func MustJSONString(value interface{}) (*string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	text := string(data)
+	return &text, nil
 }
 
 // UpdateStatus 更新用户状态（启用/禁用）。

@@ -537,6 +537,70 @@ func (PaymentRecord) TableName() string {
 	return "payment_records"
 }
 
+// OperationLog 操作日志模型。
+type OperationLog struct {
+	ID            uint64    `gorm:"primaryKey;column:id" json:"id"`
+	ActorType     string    `gorm:"column:actor_type;type:varchar(16)" json:"actor_type"`
+	ActorUserID   *uint64   `gorm:"column:actor_user_id;index" json:"actor_user_id,omitempty"`
+	ActorUsername *string   `gorm:"column:actor_username;type:varchar(64)" json:"actor_username,omitempty"`
+	ClientIP      *string   `gorm:"column:client_ip;type:varchar(45)" json:"client_ip,omitempty"`
+	ForwardedFor  *string   `gorm:"column:forwarded_for;type:text" json:"forwarded_for,omitempty"`
+	RealIP        *string   `gorm:"column:real_ip;type:varchar(45)" json:"real_ip,omitempty"`
+	UserAgent     *string   `gorm:"column:user_agent;type:text" json:"user_agent,omitempty"`
+	Action        string    `gorm:"column:action;type:varchar(64);index" json:"action"`
+	TargetType    *string   `gorm:"column:target_type;type:varchar(32)" json:"target_type,omitempty"`
+	TargetID      *uint64   `gorm:"column:target_id;index" json:"target_id,omitempty"`
+	Result        string    `gorm:"column:result;type:varchar(16);default:success;index" json:"result"`
+	Summary       string    `gorm:"column:summary;type:varchar(255)" json:"summary"`
+	ExtraJSON     *string   `gorm:"column:extra_json;type:json" json:"extra_json,omitempty"`
+	CreatedAt     time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+}
+
+func (OperationLog) TableName() string {
+	return "operation_logs"
+}
+
+// DeploymentLog 部署日志模型。
+type DeploymentLog struct {
+	ID               uint64              `gorm:"primaryKey;column:id" json:"id"`
+	OperatorUserID   *uint64             `gorm:"column:operator_user_id;index" json:"operator_user_id,omitempty"`
+	OperatorUsername *string             `gorm:"column:operator_username;type:varchar(64)" json:"operator_username,omitempty"`
+	OperatorIP       *string             `gorm:"column:operator_ip;type:varchar(45)" json:"operator_ip,omitempty"`
+	DeployType       string              `gorm:"column:deploy_type;type:varchar(32);index" json:"deploy_type"`
+	TargetServerIP   string              `gorm:"column:target_server_ip;type:varchar(255);index" json:"target_server_ip"`
+	TargetRole       string              `gorm:"column:target_role;type:varchar(16)" json:"target_role"`
+	RequestSummary   *string             `gorm:"column:request_summary;type:json" json:"request_summary,omitempty"`
+	Result           string              `gorm:"column:result;type:varchar(16);default:success;index" json:"result"`
+	DurationMS       *uint64             `gorm:"column:duration_ms" json:"duration_ms,omitempty"`
+	NodeID           *uint64             `gorm:"column:node_id" json:"node_id,omitempty"`
+	NodeIDs          *string             `gorm:"column:node_ids;type:json" json:"node_ids,omitempty"`
+	NodeHostID       *uint64             `gorm:"column:node_host_id" json:"node_host_id,omitempty"`
+	RelayID          *uint64             `gorm:"column:relay_id" json:"relay_id,omitempty"`
+	BackendIDs       *string             `gorm:"column:backend_ids;type:json" json:"backend_ids,omitempty"`
+	ErrorDetail      *string             `gorm:"column:error_detail;type:text" json:"error_detail,omitempty"`
+	CreatedAt        time.Time           `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	Steps            []DeploymentLogStep `gorm:"foreignKey:DeploymentLogID" json:"steps,omitempty"`
+}
+
+func (DeploymentLog) TableName() string {
+	return "deployment_logs"
+}
+
+// DeploymentLogStep 部署步骤日志模型。
+type DeploymentLogStep struct {
+	ID              uint64    `gorm:"primaryKey;column:id" json:"id"`
+	DeploymentLogID uint64    `gorm:"column:deployment_log_id;index" json:"deployment_log_id"`
+	StepOrder       int       `gorm:"column:step_order" json:"step_order"`
+	Name            string    `gorm:"column:name;type:varchar(128)" json:"name"`
+	Status          string    `gorm:"column:status;type:varchar(16)" json:"status"`
+	Message         string    `gorm:"column:message;type:text" json:"message"`
+	CreatedAt       time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+}
+
+func (DeploymentLogStep) TableName() string {
+	return "deployment_log_steps"
+}
+
 // CreateOrderRequest 创建订单请求。
 type CreateOrderRequest struct {
 	PlanID uint64 `json:"plan_id" binding:"required"`

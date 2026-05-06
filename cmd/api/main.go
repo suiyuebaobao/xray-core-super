@@ -59,6 +59,9 @@ func main() {
 	relayTaskRepo := repository.NewRelayConfigTaskRepository(db)
 	relayTrafficRepo := repository.NewRelayTrafficSnapshotRepository(db)
 	usageLedgerRepo := repository.NewUsageLedgerRepository(db)
+	operationLogRepo := repository.NewOperationLogRepository(db)
+	deploymentLogRepo := repository.NewDeploymentLogRepository(db)
+	runtimeLogReader := repository.NewRuntimeLogReader("logs")
 
 	// 创建 Service
 	authSvc := service.NewAuthService(userRepo, refreshRepo, cfg)
@@ -67,6 +70,9 @@ func main() {
 	nodeAccessSvc := service.NewNodeAccessService(taskRepo, nodeRepo, planRepo, subRepo, userRepo, cfg)
 	relaySvc := service.NewRelayService(relayRepo, relayBackendRepo, relayTaskRepo, nodeRepo, cfg.TaskRetryLimit)
 	relayTrafficSvc := service.NewRelayTrafficService(relayTrafficRepo)
+	operationLogSvc := service.NewOperationLogService(operationLogRepo)
+	deploymentLogSvc := service.NewDeploymentLogService(deploymentLogRepo)
+	runtimeLogSvc := service.NewRuntimeLogService(runtimeLogReader)
 	orderRepo := repository.NewOrderRepository(db)
 	orderSvc := service.NewOrderServiceWithExpireDuration(orderRepo, planRepo, cfg.OrderExpireDuration)
 
@@ -99,11 +105,11 @@ func main() {
 	)
 
 	// 创建 Handler
-	authHandler := handler.NewAuthHandler(authSvc)
-	userHandler := handler.NewUserHandler(userSvc, tokenRepo)
+	authHandler := handler.NewAuthHandler(authSvc, operationLogSvc)
+	userHandler := handler.NewUserHandler(userSvc, tokenRepo, operationLogSvc)
 	planHandler := handler.NewPlanHandler(planSvc)
-	subHandler := handler.NewSubHandler(subGen)
-	orderHandler := handler.NewOrderHandler(orderSvc)
+	subHandler := handler.NewSubHandler(subGen, operationLogSvc)
+	orderHandler := handler.NewOrderHandler(orderSvc, operationLogSvc)
 	usageHandler := handler.NewUsageHandler(usageLedgerRepo, userRepo, subRepo, planRepo)
 
 	// 管理后台 Handler
@@ -112,13 +118,14 @@ func main() {
 	adminNodeGroupHandler := handler.NewAdminNodeGroupHandlerWithNodes(nodeGroupRepo, nodeRepo, nodeAccessSvc)
 	adminNodeHandler := handler.NewAdminNodeHandlerWithSync(nodeRepo, subRepo, nodeAccessSvc, nodeHostRepo)
 	adminRelayHandler := handler.NewAdminRelayHandler(relayRepo, relayBackendRepo, relaySvc)
-	adminUserHandler := handler.NewAdminUserHandlerWithSubscription(userRepo, subRepo, tokenRepo, planRepo, nodeAccessSvc, cfg.BCryptRounds, cfg.XrayUserKeyDomain)
+	adminUserHandler := handler.NewAdminUserHandlerWithSubscription(userRepo, subRepo, tokenRepo, planRepo, nodeAccessSvc, cfg.BCryptRounds, operationLogSvc, cfg.XrayUserKeyDomain)
 	adminOrderHandler := handler.NewAdminOrderHandler(orderRepo)
 	adminPlanNodeGroupHandler := handler.NewPlanNodeGroupHandlerWithSync(planRepo, subRepo, nodeAccessSvc)
 	nodeDeploySvc := service.NewNodeDeployServiceWithAutomation(nodeRepo, nodeHostRepo, nodeGroupRepo, relayRepo, nodeAccessSvc)
-	nodeDeployHandler := handler.NewNodeDeployHandler(nodeDeploySvc)
+	nodeDeployHandler := handler.NewNodeDeployHandler(nodeDeploySvc, deploymentLogSvc)
 	relayDeploySvc := service.NewRelayDeployServiceWithAutomation(relayRepo, relaySvc, nodeRepo, nodeAccessSvc)
-	relayDeployHandler := handler.NewRelayDeployHandler(relayDeploySvc)
+	relayDeployHandler := handler.NewRelayDeployHandler(relayDeploySvc, deploymentLogSvc)
+	adminLogHandler := handler.NewAdminLogHandler(runtimeLogSvc, deploymentLogSvc, operationLogSvc)
 
 	// 设置 Gin 模式
 	gin.SetMode(gin.ReleaseMode)
@@ -176,7 +183,7 @@ func main() {
 	redeemGroup := r.Group("/api")
 	redeemGroup.Use(middleware.JWTAuth(cfg.JWTSecret), middleware.CSRF())
 	{
-		redeemGroup.POST("/redeem", handler.NewRedeemHandler(repository.NewRedeemCodeRepository(db), subRepo, planRepo, tokenRepo, nodeAccessSvc).Redeem)
+		redeemGroup.POST("/redeem", handler.NewRedeemHandler(repository.NewRedeemCodeRepository(db), subRepo, planRepo, tokenRepo, nodeAccessSvc, operationLogSvc).Redeem)
 	}
 
 	// node-agent 通信接口（使用独立 token 鉴权）
@@ -249,14 +256,20 @@ func main() {
 		adminGroup.GET("/orders", adminOrderHandler.List)
 
 		// 兑换码管理
-		adminGroup.GET("/redeem-codes", handler.NewAdminRedeemHandler(repository.NewRedeemCodeRepository(db)).List)
-		adminGroup.POST("/redeem-codes", handler.NewAdminRedeemHandler(repository.NewRedeemCodeRepository(db)).Generate)
+		adminRedeemHandler := handler.NewAdminRedeemHandler(repository.NewRedeemCodeRepository(db), operationLogSvc)
+		adminGroup.GET("/redeem-codes", adminRedeemHandler.List)
+		adminGroup.POST("/redeem-codes", adminRedeemHandler.Generate)
 
 		// 订阅 Token 管理
 		adminGroup.GET("/subscription-tokens", subTokenHandler.ListTokens)
 		adminGroup.POST("/subscription-tokens", subTokenHandler.CreateToken)
 		adminGroup.POST("/subscription-tokens/:id/revoke", subTokenHandler.RevokeToken)
 		adminGroup.POST("/subscription-tokens/:id/reset", subTokenHandler.ResetToken)
+
+		// 日志中心
+		adminGroup.GET("/logs/runtime", adminLogHandler.Runtime)
+		adminGroup.GET("/logs/deployments", adminLogHandler.Deployments)
+		adminGroup.GET("/logs/operations", adminLogHandler.Operations)
 	}
 
 	// TODO: 注册更多路由（后续阶段）

@@ -96,4 +96,9 @@ export const adminApi = {
     revoke: (id) => httpPost(`/api/admin/subscription-tokens/${id}/revoke`),
     reset: (id, payload = {}) => httpPost(`/api/admin/subscription-tokens/${id}/reset`, payload),
   },
+  logs: {
+    runtime: (params) => httpGet('/api/admin/logs/runtime', compact(params || {})),
+    deployments: (params) => httpGet('/api/admin/logs/deployments', pageParams(params)),
+    operations: (params) => httpGet('/api/admin/logs/operations', pageParams(params)),
+  },
 }

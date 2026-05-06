@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"suiyue/internal/platform/response"
+	"suiyue/internal/service"
 	"suiyue/internal/subscription"
 
 	"github.com/gin-gonic/gin"
@@ -22,12 +23,17 @@ import (
 
 // SubHandler 订阅下载处理器。
 type SubHandler struct {
-	gen *subscription.Generator
+	gen             *subscription.Generator
+	operationLogSvc *service.OperationLogService
 }
 
 // NewSubHandler 创建订阅下载处理器。
-func NewSubHandler(gen *subscription.Generator) *SubHandler {
-	return &SubHandler{gen: gen}
+func NewSubHandler(gen *subscription.Generator, operationLogSvc ...*service.OperationLogService) *SubHandler {
+	var logSvc *service.OperationLogService
+	if len(operationLogSvc) > 0 {
+		logSvc = operationLogSvc[0]
+	}
+	return &SubHandler{gen: gen, operationLogSvc: logSvc}
 }
 
 // Download 处理 GET /sub/:token/:format。
@@ -46,6 +52,20 @@ func (h *SubHandler) Download(c *gin.Context) {
 	if err != nil {
 		response.HandleError(c, err)
 		return
+	}
+
+	if h.operationLogSvc != nil && result.User != nil {
+		logCtx := buildClientLogContext(c)
+		targetType := "subscription_token"
+		tokenSuffix := token
+		if len(tokenSuffix) > 6 {
+			tokenSuffix = tokenSuffix[len(tokenSuffix)-6:]
+		}
+		_ = h.operationLogSvc.Record(c.Request.Context(), logCtx, "user", "download_subscription", "success", "用户下载订阅", &targetType, nil, map[string]interface{}{
+			"user_id":      result.User.ID,
+			"format":       format,
+			"token_suffix": tokenSuffix,
+		})
 	}
 
 	// 设置 ETag

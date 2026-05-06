@@ -62,6 +62,7 @@ const routes = [
       { path: 'orders', name: 'AdminOrders', component: () => import('@/pages/admin/Orders.vue') },
       { path: 'redeem-codes', name: 'AdminRedeemCodes', component: () => import('@/pages/admin/RedeemCodes.vue') },
       { path: 'subscription-tokens', name: 'AdminSubscriptionTokens', component: () => import('@/pages/admin/SubscriptionTokens.vue') },
+      { path: 'logs', name: 'AdminLogs', component: () => import('@/pages/admin/Logs.vue') },
     ],
   },
 ]

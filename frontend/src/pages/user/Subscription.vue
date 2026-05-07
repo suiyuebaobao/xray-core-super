@@ -29,7 +29,8 @@
             <el-tag :type="statusTagType">{{ subscription.status }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="到期时间">{{ formatDate(subscription.expire_date) }}</el-descriptions-item>
-          <el-descriptions-item label="已用流量">{{ formatBytes(subscription.used_traffic) }} / {{ formatBytes(subscription.traffic_limit) }}</el-descriptions-item>
+          <el-descriptions-item label="普通流量">{{ formatBytes(subscription.used_traffic) }} / {{ formatBytes(subscription.traffic_limit) }}</el-descriptions-item>
+          <el-descriptions-item label="家宽流量">{{ formatBytes(subscription.residential_used_traffic) }} / {{ formatBytes(subscription.residential_traffic_limit) }}</el-descriptions-item>
         </el-descriptions>
         <div class="progress-wrap">
           <el-progress :percentage="trafficPercent" :color="trafficColor" :stroke-width="12" />

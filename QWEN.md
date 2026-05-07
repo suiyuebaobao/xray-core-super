@@ -95,6 +95,18 @@ suiyue/
 - 用户注册或管理员新增用户时，必须同步生成用户唯一订阅 Token，并自动分配基础套餐订阅。
 - 删除普通套餐时采用 `plans.is_deleted=true` 逻辑删除，不硬删订单或兑换码历史；仍在使用该套餐的活动订阅必须自动迁移到基础套餐，并触发出口节点用户同步。
 - 套餐列表、用户套餐选择、下单和兑换码开通不得使用 `is_deleted=true` 的套餐。
+- 套餐流量采用固定双池：`normal`（普通流量）与 `residential`（家宽流量）。`plans.traffic_limit` / `user_subscriptions.traffic_limit` / `user_subscriptions.used_traffic` 继续表示普通流量兼容字段，家宽流量使用独立字段维护。
+- 订阅超额判断必须按流量池分别处理：普通流量耗尽只影响普通节点，家宽流量耗尽只影响家宽节点，不能混扣，也不能把单池耗尽视为整个订阅不可用。
+- 兑换码、管理员改订阅、基础套餐迁移和注册自动分配基础套餐时，必须同时维护普通流量和家宽流量字段；未显式设置家宽流量时默认 `0`。
+
+### 双流量池规则
+
+- 出口节点必须声明流量池归属：`nodes.traffic_pool` 取值固定为 `normal` 或 `residential`，默认 `normal`。
+- `/api/agent/traffic` 与 `/api/agent/multi/traffic` 处理流量时，必须先读取节点 `traffic_pool`，再把增量流量记入对应订阅流量池。
+- `usage_ledgers` 必须记录流量池归属，便于区分普通流量和家宽流量账本。
+- 订阅生成时必须按节点流量池过滤：某个流量池剩余为 0 时，该池节点和对应中转线路不得继续出现在订阅里；另一个池有剩余时仍可继续下发。
+- 节点用户同步必须支持按流量池下发。普通流量超额只能对普通池节点下发 `DISABLE_USER`，家宽流量超额只能对家宽池节点下发 `DISABLE_USER`。
+- 后台和用户侧展示必须同时展示普通流量与家宽流量；旧字段继续展示普通流量，新增结构用于展示完整双池信息。
 
 ### 规则文件同步要求
 
@@ -123,9 +135,11 @@ suiyue/
 - `nodes.protocol` 表示 VLESS 等协议，`nodes.transport` 表示传输层；当前默认 `tcp`，可选 `xhttp`。
 - XHTTP 节点仍使用 VLESS + Reality，但必须清空 `flow`，不得给 Xray clients 或订阅写入 `xtls-rprx-vision`。
 - XHTTP 参数由 `nodes.xhttp_path`、`nodes.xhttp_host`、`nodes.xhttp_mode` 管理；订阅输出必须包含 `network/type=xhttp` 和 XHTTP 参数。
+- 节点的 `traffic_pool` 与协议、传输层独立；同一物理服务器可同时部署普通池和家宽池逻辑节点。
 - 管理后台新增节点和一键部署允许多选传输模式；单选时仍创建一条 `nodes`，多选时按每种传输模式创建一条逻辑 `nodes` 线路。
 - 同一 IP 同时选择 TCP 与 XHTTP 时必须使用不同端口；默认 TCP 443、XHTTP 8443，不能在同一个 Xray inbound 上混用两种 network。
 - 修改 XHTTP 字段、订阅格式、Xray `xhttpSettings` 或 node-agent 用户同步时，必须同步更新三份规则文件、`开发方案.md` 和相关接口/部署文档，并运行后端测试、前端构建和 Playwright smoke。
+- 修改双流量池字段、节点流量池归属、`/api/agent/traffic` 扣量逻辑、订阅过滤或套餐展示时，必须同步更新三份规则文件、`开发方案.md`、接口文档、节点代理文档和运维手册，并运行后端测试、前端构建和 Playwright smoke。
 
 ### 多出口 IP 与 multi_exit 规则
 

@@ -33,10 +33,11 @@ type TrafficService struct {
 }
 
 type quotaTrigger struct {
-	action string
-	userID uint64
-	subID  uint64
-	planID uint64
+	action      string
+	userID      uint64
+	subID       uint64
+	planID      uint64
+	trafficPool string
 }
 
 // NewTrafficService 创建流量采集服务。
@@ -95,6 +96,12 @@ func (s *TrafficService) ProcessTrafficReportWithOptions(ctx context.Context, no
 
 // processSingleUser 处理单个用户的流量上报。
 func (s *TrafficService) processSingleUser(ctx context.Context, nodeID uint64, item TrafficItem, capturedAt time.Time) error {
+	node, err := s.nodeRepo.FindByID(ctx, nodeID)
+	if err != nil {
+		return fmt.Errorf("find node %d: %w", nodeID, err)
+	}
+	trafficPool := model.NormalizeTrafficPool(node.TrafficPool)
+
 	// 1. 查找用户
 	user, err := s.userRepo.FindByXrayUserKey(ctx, item.XrayUserKey)
 	if err != nil {
@@ -160,6 +167,7 @@ func (s *TrafficService) processSingleUser(ctx context.Context, nodeID uint64, i
 			UserID:         user.ID,
 			SubscriptionID: &sub.ID,
 			NodeID:         nodeID,
+			TrafficPool:    trafficPool,
 			DeltaUpload:    deltaUp,
 			DeltaDownload:  deltaDown,
 			DeltaTotal:     deltaTotal,
@@ -168,11 +176,14 @@ func (s *TrafficService) processSingleUser(ctx context.Context, nodeID uint64, i
 			return fmt.Errorf("create ledger: %w", err)
 		}
 
-		// 原子累加订阅使用量，避免并发上报后写覆盖先写。
+		column := "used_traffic"
+		if trafficPool == model.TrafficPoolResidential {
+			column = "residential_used_traffic"
+		}
 		if err := tx.Model(&model.UserSubscription{}).
 			Where("id = ?", sub.ID).
-			Update("used_traffic", gorm.Expr("used_traffic + ?", deltaTotal)).Error; err != nil {
-			return fmt.Errorf("update used_traffic: %w", err)
+			Update(column, gorm.Expr(column+" + ?", deltaTotal)).Error; err != nil {
+			return fmt.Errorf("update %s: %w", column, err)
 		}
 
 		var updatedSub model.UserSubscription
@@ -180,7 +191,7 @@ func (s *TrafficService) processSingleUser(ctx context.Context, nodeID uint64, i
 			return fmt.Errorf("reload subscription: %w", err)
 		}
 
-		t, err := s.markOverQuotaTx(tx, &updatedSub)
+		t, err := s.markOverQuotaTx(tx, &updatedSub, trafficPool)
 		if err != nil {
 			return err
 		}
@@ -213,17 +224,13 @@ func calculateDelta(old, new uint64) uint64 {
 	return CalculateDelta(old, new)
 }
 
-func (s *TrafficService) markOverQuotaTx(tx *gorm.DB, sub *model.UserSubscription) (*quotaTrigger, error) {
-	if sub.TrafficLimit > 0 && sub.UsedTraffic >= sub.TrafficLimit {
-		if err := tx.Model(&model.UserSubscription{}).
-			Where("id = ?", sub.ID).
-			Updates(map[string]interface{}{
-				"status":         "SUSPENDED",
-				"active_user_id": nil,
-			}).Error; err != nil {
-			return nil, fmt.Errorf("update subscription %d status to SUSPENDED: %w", sub.ID, err)
+func (s *TrafficService) markOverQuotaTx(tx *gorm.DB, sub *model.UserSubscription, trafficPool string) (*quotaTrigger, error) {
+	if trafficPool == model.TrafficPoolResidential {
+		if sub.ResidentialTrafficLimit > 0 && sub.ResidentialUsedTraffic >= sub.ResidentialTrafficLimit {
+			return &quotaTrigger{action: "over_traffic", userID: sub.UserID, subID: sub.ID, planID: sub.PlanID, trafficPool: trafficPool}, nil
 		}
-		return &quotaTrigger{action: "over_traffic", userID: sub.UserID, subID: sub.ID, planID: sub.PlanID}, nil
+	} else if sub.TrafficLimit > 0 && sub.UsedTraffic >= sub.TrafficLimit {
+		return &quotaTrigger{action: "over_traffic", userID: sub.UserID, subID: sub.ID, planID: sub.PlanID, trafficPool: trafficPool}, nil
 	}
 
 	if time.Now().After(sub.ExpireDate) {
@@ -235,7 +242,7 @@ func (s *TrafficService) markOverQuotaTx(tx *gorm.DB, sub *model.UserSubscriptio
 			}).Error; err != nil {
 			return nil, fmt.Errorf("update subscription %d status to EXPIRED: %w", sub.ID, err)
 		}
-		return &quotaTrigger{action: "expire", userID: sub.UserID, subID: sub.ID, planID: sub.PlanID}, nil
+		return &quotaTrigger{action: "expire", userID: sub.UserID, subID: sub.ID, planID: sub.PlanID, trafficPool: trafficPool}, nil
 	}
 
 	return nil, nil
@@ -247,7 +254,7 @@ func (s *TrafficService) runQuotaTrigger(ctx context.Context, trigger *quotaTrig
 	}
 	switch trigger.action {
 	case "over_traffic":
-		return s.nodeAccessSvc.TriggerOnOverTraffic(ctx, trigger.userID, trigger.subID, trigger.planID)
+		return s.nodeAccessSvc.TriggerOnOverTrafficByPool(ctx, trigger.userID, trigger.subID, trigger.planID, trigger.trafficPool)
 	case "expire":
 		return s.nodeAccessSvc.TriggerOnExpire(ctx, trigger.userID, trigger.subID, trigger.planID)
 	default:
@@ -258,14 +265,17 @@ func (s *TrafficService) runQuotaTrigger(ctx context.Context, trigger *quotaTrig
 // CheckAndHandleOverQuota 检查订阅是否超限。
 func (s *TrafficService) CheckAndHandleOverQuota(ctx context.Context, sub *model.UserSubscription) error {
 	if sub.TrafficLimit > 0 && sub.UsedTraffic >= sub.TrafficLimit {
-		if err := s.subRepo.UpdateStatus(ctx, sub.ID, "SUSPENDED"); err != nil {
-			log.Printf("[traffic] update subscription %d status to SUSPENDED failed: %v", sub.ID, err)
-		}
-		if err := s.nodeAccessSvc.TriggerOnOverTraffic(ctx, sub.UserID, sub.ID, sub.PlanID); err != nil {
-			log.Printf("[traffic] trigger over quota tasks for sub %d failed: %v", sub.ID, err)
+		if err := s.nodeAccessSvc.TriggerOnOverTrafficByPool(ctx, sub.UserID, sub.ID, sub.PlanID, model.TrafficPoolNormal); err != nil {
+			log.Printf("[traffic] trigger normal quota tasks for sub %d failed: %v", sub.ID, err)
 			return fmt.Errorf("trigger over quota: %w", err)
 		}
-		return nil
+	}
+
+	if sub.ResidentialTrafficLimit > 0 && sub.ResidentialUsedTraffic >= sub.ResidentialTrafficLimit {
+		if err := s.nodeAccessSvc.TriggerOnOverTrafficByPool(ctx, sub.UserID, sub.ID, sub.PlanID, model.TrafficPoolResidential); err != nil {
+			log.Printf("[traffic] trigger residential quota tasks for sub %d failed: %v", sub.ID, err)
+			return fmt.Errorf("trigger over quota: %w", err)
+		}
 	}
 
 	if time.Now().After(sub.ExpireDate) {

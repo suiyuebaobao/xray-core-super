@@ -989,14 +989,16 @@ func (r *PlanRepository) DeleteWithDefaultFallback(ctx context.Context, id uint6
 				if err := tx.Model(&model.UserSubscription{}).
 					Where("plan_id = ? AND status = ? AND expire_date > ?", id, "ACTIVE", now).
 					Updates(map[string]interface{}{
-						"plan_id":        defaultPlan.ID,
-						"start_date":     now,
-						"expire_date":    expireDate,
-						"traffic_limit":  defaultPlan.TrafficLimit,
-						"used_traffic":   uint64(0),
-						"status":         "ACTIVE",
-						"active_user_id": gorm.Expr("user_id"),
-						"updated_at":     now,
+						"plan_id":                   defaultPlan.ID,
+						"start_date":                now,
+						"expire_date":               expireDate,
+						"traffic_limit":             defaultPlan.TrafficLimit,
+						"used_traffic":              uint64(0),
+						"residential_traffic_limit": defaultPlan.ResidentialTrafficLimit,
+						"residential_used_traffic":  uint64(0),
+						"status":                    "ACTIVE",
+						"active_user_id":            gorm.Expr("user_id"),
+						"updated_at":                now,
 					}).Error; err != nil {
 					return err
 				}
@@ -1102,15 +1104,16 @@ func ensureDefaultPlanTxExcept(tx *gorm.DB, excludeID uint64) (*model.Plan, erro
 	}
 
 	plan := &model.Plan{
-		Name:         defaultPlanName,
-		Price:        0,
-		Currency:     "USDT",
-		TrafficLimit: 0,
-		DurationDays: defaultPlanDurationDays,
-		SortWeight:   -1000,
-		IsActive:     true,
-		IsDefault:    true,
-		IsDeleted:    false,
+		Name:                    defaultPlanName,
+		Price:                   0,
+		Currency:                "USDT",
+		TrafficLimit:            0,
+		ResidentialTrafficLimit: 0,
+		DurationDays:            defaultPlanDurationDays,
+		SortWeight:              -1000,
+		IsActive:                true,
+		IsDefault:               true,
+		IsDeleted:               false,
 	}
 	if err := tx.Create(plan).Error; err != nil {
 		return nil, err
@@ -1122,14 +1125,16 @@ func createDefaultSubscriptionForUserTx(tx *gorm.DB, userID uint64, plan *model.
 	expireDate := defaultSubscriptionExpireDate(plan, now)
 	activeUserID := userID
 	sub := &model.UserSubscription{
-		UserID:       userID,
-		PlanID:       plan.ID,
-		StartDate:    now,
-		ExpireDate:   expireDate,
-		TrafficLimit: plan.TrafficLimit,
-		UsedTraffic:  0,
-		Status:       "ACTIVE",
-		ActiveUserID: &activeUserID,
+		UserID:                  userID,
+		PlanID:                  plan.ID,
+		StartDate:               now,
+		ExpireDate:              expireDate,
+		TrafficLimit:            plan.TrafficLimit,
+		UsedTraffic:             0,
+		ResidentialTrafficLimit: plan.ResidentialTrafficLimit,
+		ResidentialUsedTraffic:  0,
+		Status:                  "ACTIVE",
+		ActiveUserID:            &activeUserID,
 	}
 	if err := tx.Create(sub).Error; err != nil {
 		return nil, err
@@ -1534,6 +1539,7 @@ func NewNodeRepository(db *gorm.DB) *NodeRepository {
 
 // Create 创建节点。
 func (r *NodeRepository) Create(ctx context.Context, node *model.Node) (*model.Node, error) {
+	node.TrafficPool = model.NormalizeTrafficPool(node.TrafficPool)
 	err := r.db.WithContext(ctx).Create(node).Error
 	if err == nil && node.Transport == "xhttp" && node.Flow != "" {
 		node.Flow = ""
@@ -1575,6 +1581,7 @@ func (r *NodeRepository) BelongsToNodeHost(ctx context.Context, nodeID uint64, n
 
 // Update 更新节点。
 func (r *NodeRepository) Update(ctx context.Context, node *model.Node) error {
+	node.TrafficPool = model.NormalizeTrafficPool(node.TrafficPool)
 	return r.db.WithContext(ctx).Save(node).Error
 }
 

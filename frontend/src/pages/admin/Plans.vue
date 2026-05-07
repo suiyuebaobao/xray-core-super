@@ -34,8 +34,11 @@
       <el-table-column prop="price" label="价格" width="100">
         <template #default="{ row }">{{ row.price }} {{ row.currency }}</template>
       </el-table-column>
-      <el-table-column prop="traffic_limit" label="流量" width="120">
-        <template #default="{ row }">{{ formatBytes(row.traffic_limit) }}</template>
+      <el-table-column label="流量" min-width="180">
+        <template #default="{ row }">
+          <div>普通 {{ formatBytes(row.traffic_limit) }}</div>
+          <div>家宽 {{ formatBytes(row.residential_traffic_limit) }}</div>
+        </template>
       </el-table-column>
       <el-table-column prop="duration_days" label="时长（天）" width="100" />
       <el-table-column prop="is_active" label="状态" width="80">
@@ -93,6 +96,9 @@
         </el-form-item>
         <el-form-item label="流量（GB）" prop="trafficLimitGB">
           <el-input-number v-model="form.trafficLimitGB" :min="0" />
+        </el-form-item>
+        <el-form-item label="家宽流量（GB）" prop="residentialTrafficLimitGB">
+          <el-input-number v-model="form.residentialTrafficLimitGB" :min="0" />
         </el-form-item>
         <el-form-item label="时长（天）" prop="duration_days">
           <el-input-number v-model="form.duration_days" :min="1" />
@@ -164,6 +170,7 @@ const form = reactive({
   name: '',
   price: 0,
   trafficLimitGB: 0,
+  residentialTrafficLimitGB: 0,
   duration_days: 30,
   nodeGroupIds: [],
   is_active: true,
@@ -203,6 +210,7 @@ function resetForm() {
   form.name = ''
   form.price = 0
   form.trafficLimitGB = 0
+  form.residentialTrafficLimitGB = 0
   form.duration_days = 30
   form.nodeGroupIds = []
   form.is_active = true
@@ -222,6 +230,7 @@ function showEditDialog(row) {
   form.name = row.name
   form.price = row.price
   form.trafficLimitGB = Math.round(row.traffic_limit / 1024 / 1024 / 1024)
+  form.residentialTrafficLimitGB = Math.round((row.residential_traffic_limit || 0) / 1024 / 1024 / 1024)
   form.duration_days = row.duration_days
   form.nodeGroupIds = row.node_group_ids || []
   form.isDefault = !!row.is_default
@@ -239,6 +248,7 @@ async function handleSave() {
       name: form.name,
       price: form.price,
       traffic_limit: form.trafficLimitGB * 1024 * 1024 * 1024,
+      residential_traffic_limit: form.residentialTrafficLimitGB * 1024 * 1024 * 1024,
       duration_days: form.duration_days,
       is_active: form.is_active,
     }

@@ -231,6 +231,89 @@ func TestGenerator_GenerateByToken_Clash(t *testing.T) {
 	assert.Equal(t, "RayPilot UAT.yaml", customResult.Filename)
 }
 
+func TestGenerator_GenerateByToken_FiltersExhaustedTrafficPoolNodes(t *testing.T) {
+	db, gen := setupSubTestDB(t)
+	ctx := context.Background()
+
+	user := &model.User{UUID: "pool-user", Username: "pooluser", PasswordHash: "h", XrayUserKey: "pool@x", Status: "active"}
+	require.NoError(t, db.Create(user).Error)
+
+	plan := &model.Plan{
+		Name:                    "PoolPlan",
+		Price:                   10,
+		DurationDays:            30,
+		TrafficLimit:            1024,
+		ResidentialTrafficLimit: 2048,
+		IsActive:                true,
+	}
+	require.NoError(t, db.Create(plan).Error)
+
+	nodeGroup := &model.NodeGroup{Name: "pool-group"}
+	require.NoError(t, db.Create(nodeGroup).Error)
+	require.NoError(t, db.Exec("INSERT INTO plan_node_groups (plan_id, node_group_id) VALUES (?, ?)", plan.ID, nodeGroup.ID).Error)
+
+	normalNode := &model.Node{
+		Name:           "NormalNode",
+		Protocol:       "vless",
+		TrafficPool:    model.TrafficPoolNormal,
+		Host:           "normal.example.com",
+		Port:           443,
+		ServerName:     "www.microsoft.com",
+		PublicKey:      "pk-normal",
+		ShortID:        "sid-normal",
+		Fingerprint:    "chrome",
+		Flow:           "xtls-rprx-vision",
+		NodeGroupID:    &nodeGroup.ID,
+		AgentBaseURL:   "http://normal:8080",
+		AgentTokenHash: "hash",
+		IsEnabled:      true,
+	}
+	residentialNode := &model.Node{
+		Name:           "ResidentialNode",
+		Protocol:       "vless",
+		TrafficPool:    model.TrafficPoolResidential,
+		Host:           "res.example.com",
+		Port:           443,
+		ServerName:     "www.microsoft.com",
+		PublicKey:      "pk-res",
+		ShortID:        "sid-res",
+		Fingerprint:    "chrome",
+		Flow:           "xtls-rprx-vision",
+		NodeGroupID:    &nodeGroup.ID,
+		AgentBaseURL:   "http://res:8080",
+		AgentTokenHash: "hash",
+		IsEnabled:      true,
+	}
+	require.NoError(t, db.Create(normalNode).Error)
+	require.NoError(t, db.Create(residentialNode).Error)
+
+	sub := &model.UserSubscription{
+		UserID:                  user.ID,
+		PlanID:                  plan.ID,
+		StartDate:               time.Now(),
+		ExpireDate:              time.Now().AddDate(0, 0, 30),
+		TrafficLimit:            1024,
+		UsedTraffic:             1024,
+		ResidentialTrafficLimit: 2048,
+		ResidentialUsedTraffic:  0,
+		Status:                  "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+
+	subID := sub.ID
+	token := &model.SubscriptionToken{
+		UserID:         user.ID,
+		SubscriptionID: &subID,
+		Token:          "pool-token",
+	}
+	require.NoError(t, db.Create(token).Error)
+
+	result, err := gen.GenerateByToken(ctx, token.Token, "plain")
+	require.NoError(t, err)
+	assert.NotContains(t, result.Content, "normal.example.com")
+	assert.Contains(t, result.Content, "res.example.com")
+}
+
 // TestGenerator_GenerateByToken_Base64 测试通过 token 生成 Base64 订阅。
 func TestGenerator_GenerateByToken_Base64(t *testing.T) {
 	db, gen := setupSubTestDB(t)

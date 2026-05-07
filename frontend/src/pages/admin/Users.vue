@@ -39,7 +39,7 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="剩余流量" min-width="190">
+      <el-table-column label="剩余流量" min-width="260">
         <template #default="{ row }">
           <div v-if="row.subscription" class="traffic-cell">
             <div class="traffic-line">
@@ -48,6 +48,7 @@
             </div>
             <el-progress :percentage="trafficPercent(row)" :show-text="false" :status="trafficProgressStatus(row)" />
             <small>已用 {{ formatBytes(row.used_traffic) }} / {{ formatTrafficLimit(row.traffic_limit) }}</small>
+            <small>家宽 {{ formatBytes(row.residential_used_traffic) }} / {{ formatTrafficLimit(row.residential_traffic_limit) }}</small>
           </div>
           <span v-else class="muted">-</span>
         </template>
@@ -139,8 +140,14 @@
         <el-form-item label="总流量(GB)" prop="trafficLimitGB">
           <el-input-number v-model="subForm.trafficLimitGB" :min="0" :precision="0" />
         </el-form-item>
+        <el-form-item label="家宽流量(GB)">
+          <el-input-number v-model="subForm.residentialTrafficLimitGB" :min="0" :precision="0" />
+        </el-form-item>
         <el-form-item label="已用(GB)">
           <el-input-number v-model="subForm.usedTrafficGB" :min="0" :precision="2" />
+        </el-form-item>
+        <el-form-item label="家宽已用(GB)">
+          <el-input-number v-model="subForm.residentialUsedTrafficGB" :min="0" :precision="2" />
         </el-form-item>
       </el-form>
 
@@ -323,7 +330,9 @@ const subForm = reactive({
   status: 'ACTIVE',
   expire_date: null,
   trafficLimitGB: 0,
+  residentialTrafficLimitGB: 0,
   usedTrafficGB: 0,
+  residentialUsedTrafficGB: 0,
 })
 
 const subRules = {
@@ -409,8 +418,10 @@ function userSubscriptionStatusType(row) {
 }
 
 function remainingTrafficLabel(row) {
-  if (row.traffic_unlimited || !row.traffic_limit) return '不限量'
-  return formatBytes(row.remaining_traffic)
+  const normal = row.traffic_unlimited || !row.traffic_limit ? '普通 不限量' : `普通 ${formatBytes(row.remaining_traffic)}`
+  const residentialRemaining = Math.max(0, Number(row.residential_traffic_limit || 0) - Number(row.residential_used_traffic || 0))
+  const residential = row.residential_traffic_limit ? `家宽 ${formatBytes(residentialRemaining)}` : '家宽 0 B'
+  return `${normal} / ${residential}`
 }
 
 function trafficPercent(row) {
@@ -609,7 +620,9 @@ async function handleSubscription(row) {
   subForm.status = 'ACTIVE'
   subForm.expire_date = defaultExpireDate()
   subForm.trafficLimitGB = bytesToGB(plans.value[0]?.traffic_limit || 0)
+  subForm.residentialTrafficLimitGB = bytesToGB(plans.value[0]?.residential_traffic_limit || 0)
   subForm.usedTrafficGB = 0
+  subForm.residentialUsedTrafficGB = 0
   subDialogVisible.value = true
   subLoading.value = true
   try {
@@ -621,7 +634,9 @@ async function handleSubscription(row) {
       subForm.status = currentSubscription.value.status
       subForm.expire_date = new Date(currentSubscription.value.expire_date)
       subForm.trafficLimitGB = bytesToGB(currentSubscription.value.traffic_limit)
+      subForm.residentialTrafficLimitGB = bytesToGB(currentSubscription.value.residential_traffic_limit)
       subForm.usedTrafficGB = bytesToGB(currentSubscription.value.used_traffic)
+      subForm.residentialUsedTrafficGB = bytesToGB(currentSubscription.value.residential_used_traffic)
     }
   } catch (err) {
     ElMessage.error(err.message || '获取订阅失败')
@@ -658,6 +673,8 @@ async function saveSubscription() {
       expire_date: new Date(subForm.expire_date).toISOString(),
       traffic_limit: gbToBytes(subForm.trafficLimitGB),
       used_traffic: gbToBytes(subForm.usedTrafficGB),
+      residential_traffic_limit: gbToBytes(subForm.residentialTrafficLimitGB),
+      residential_used_traffic: gbToBytes(subForm.residentialUsedTrafficGB),
     })
     currentSubscription.value = res.data.subscription
     subTokens.value = normalizeSubscriptionTokens(res.data.tokens)

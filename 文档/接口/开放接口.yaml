@@ -22,13 +22,13 @@ paths:
       summary: 当前用户信息
       responses:
         "200":
-          description: 用户资料和订阅概览
+          description: 用户资料和订阅概览，订阅同时返回普通流量和家宽流量字段
   /api/user/subscription:
     get:
       summary: 当前订阅详情
       responses:
         "200":
-          description: 订阅信息和可用订阅 Token
+          description: 订阅信息和可用订阅 Token，包含普通流量与家宽流量字段
   /api/user/usage:
     get:
       summary: 当前用户流量用量记录
@@ -130,6 +130,10 @@ paths:
                 traffic_limit:
                   type: integer
                 used_traffic:
+                  type: integer
+                residential_traffic_limit:
+                  type: integer
+                residential_used_traffic:
                   type: integer
                 generate_token:
                   type: boolean

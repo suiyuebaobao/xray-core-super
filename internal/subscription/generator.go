@@ -98,7 +98,9 @@ func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, for
 
 	// 检查流量是否超限
 	if sub.TrafficLimit > 0 && sub.UsedTraffic >= sub.TrafficLimit {
-		return nil, response.ErrSubscriptionExpire
+		if sub.ResidentialTrafficLimit == 0 || sub.ResidentialUsedTraffic >= sub.ResidentialTrafficLimit {
+			return nil, response.ErrSubscriptionExpire
+		}
 	}
 
 	// 3. 查询用户
@@ -132,6 +134,9 @@ func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, for
 		}
 		for _, node := range nodes {
 			if _, ok := seenNodes[node.ID]; ok {
+				continue
+			}
+			if !model.SubscriptionTrafficAvailableByPool(sub, node.TrafficPool) {
 				continue
 			}
 			seenNodes[node.ID] = struct{}{}

@@ -264,13 +264,33 @@ func (s *UserService) GetMeInfo(ctx context.Context, userID uint64) (map[string]
 	sub, subErr := s.subRepo.FindActiveByUserID(ctx, userID)
 	if subErr == nil && sub != nil {
 		tokenData := map[string]interface{}{
-			"subscription_id": sub.ID,
-			"plan_id":         sub.PlanID,
-			"status":          sub.Status,
-			"expire_date":     sub.ExpireDate,
-			"traffic_limit":   sub.TrafficLimit,
-			"used_traffic":    sub.UsedTraffic,
-			"tokens":          []string{},
+			"subscription_id":           sub.ID,
+			"plan_id":                   sub.PlanID,
+			"status":                    sub.Status,
+			"expire_date":               sub.ExpireDate,
+			"traffic_limit":             sub.TrafficLimit,
+			"used_traffic":              sub.UsedTraffic,
+			"residential_traffic_limit": sub.ResidentialTrafficLimit,
+			"residential_used_traffic":  sub.ResidentialUsedTraffic,
+			"traffic_pools": []map[string]interface{}{
+				{
+					"code":              model.TrafficPoolNormal,
+					"name":              model.TrafficPoolDisplayName(model.TrafficPoolNormal),
+					"traffic_limit":     sub.TrafficLimit,
+					"used_traffic":      sub.UsedTraffic,
+					"remaining_traffic": model.SubscriptionRemainingTrafficByPool(sub, model.TrafficPoolNormal),
+					"unlimited":         model.SubscriptionTrafficUnlimitedByPool(sub, model.TrafficPoolNormal),
+				},
+				{
+					"code":              model.TrafficPoolResidential,
+					"name":              model.TrafficPoolDisplayName(model.TrafficPoolResidential),
+					"traffic_limit":     sub.ResidentialTrafficLimit,
+					"used_traffic":      sub.ResidentialUsedTraffic,
+					"remaining_traffic": model.SubscriptionRemainingTrafficByPool(sub, model.TrafficPoolResidential),
+					"unlimited":         false,
+				},
+			},
+			"tokens": []string{},
 		}
 		result["subscription"] = tokenData
 	}

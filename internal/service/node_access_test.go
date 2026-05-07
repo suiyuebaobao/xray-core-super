@@ -89,13 +89,6 @@ func TestNodeAccessService_TriggerOnSubscribe(t *testing.T) {
 	}
 	db.Create(node)
 
-	// 创建用户
-	db.Create(&model.User{
-		ID: 1, UUID: "test-uuid", Username: "testuser",
-		PasswordHash: "hashed", XrayUserKey: "testuser@test.local",
-		Status: "active",
-	})
-
 	sub := &model.UserSubscription{
 		UserID:       1,
 		PlanID:       1,
@@ -165,13 +158,6 @@ func TestNodeAccessService_TriggerOnSubscribe_XHTTPPayloadOmitsFlow(t *testing.T
 func TestNodeAccessService_TriggerOnExpire(t *testing.T) {
 	db, svc := setupNodeAccessTest(t)
 	ctx := context.Background()
-
-	// 创建用户
-	db.Create(&model.User{
-		ID: 1, UUID: "test-uuid", Username: "testuser",
-		PasswordHash: "hashed", XrayUserKey: "testuser@test.local",
-		Status: "active",
-	})
 
 	sub := &model.UserSubscription{
 		UserID: 1, PlanID: 1, StartDate: db.NowFunc(),
@@ -343,13 +329,6 @@ func TestNodeAccessService_TriggerOnSubscribe_DuplicateTask(t *testing.T) {
 		AgentTokenHash: "hash", NodeGroupID: &nodeGroup.ID, IsEnabled: true,
 	}
 	db.Create(node)
-
-	// 创建用户
-	db.Create(&model.User{
-		ID: 1, UUID: "test-uuid", Username: "testuser",
-		PasswordHash: "hashed", XrayUserKey: "testuser@test.local",
-		Status: "active",
-	})
 
 	sub := &model.UserSubscription{
 		UserID: 1, PlanID: 1, StartDate: db.NowFunc(),

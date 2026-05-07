@@ -34,6 +34,13 @@
           <el-tag effect="plain" :type="row.transport === 'xhttp' ? 'warning' : 'info'">{{ transportLabel(row.transport) }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column prop="traffic_pool" label="流量池" width="100">
+        <template #default="{ row }">
+          <el-tag effect="plain" :type="row.traffic_pool === 'residential' ? 'warning' : 'success'">
+            {{ row.traffic_pool === 'residential' ? '家宽' : '普通' }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="line_mode" label="线路输出" width="130">
         <template #default="{ row }">
           <el-tag effect="plain">{{ lineModeLabel(row.line_mode) }}</el-tag>
@@ -73,6 +80,12 @@
         </el-form-item>
         <el-form-item label="地址" prop="host">
           <el-input v-model="form.host" placeholder="例如：hk.example.com" />
+        </el-form-item>
+        <el-form-item label="流量池">
+          <el-select v-model="form.traffic_pool" style="width: 100%">
+            <el-option label="普通流量" value="normal" />
+            <el-option label="家宽流量" value="residential" />
+          </el-select>
         </el-form-item>
         <el-form-item label="传输模式">
           <el-select v-model="form.transports" multiple :multiple-limit="isEdit ? 1 : 2" style="width: 100%" @change="handleTransportSelectionChange(form)">
@@ -158,6 +171,12 @@
         </el-form-item>
         <el-form-item label="节点 Token">
           <el-input v-model="deployForm.node_token" placeholder="留空自动生成" />
+        </el-form-item>
+        <el-form-item label="流量池">
+          <el-select v-model="deployForm.traffic_pool" style="width: 100%">
+            <el-option label="普通流量" value="normal" />
+            <el-option label="家宽流量" value="residential" />
+          </el-select>
         </el-form-item>
         <el-form-item label="节点分组">
           <el-select v-model="deployForm.node_group_ids" multiple filterable placeholder="部署成功后自动加入分组" style="width: 100%">
@@ -278,6 +297,7 @@ const batchDeleting = ref(false)
 const form = reactive({
   name: '',
   host: '',
+  traffic_pool: 'normal',
   transports: ['tcp'],
   tcp_port: 443,
   xhttp_port: 443,
@@ -329,6 +349,7 @@ const deployForm = reactive({
   ssh_user: 'root',
   ssh_password: '',
   node_name: '',
+  traffic_pool: 'normal',
   center_url: window.location.origin,
   node_token: '',
   transports: ['tcp'],
@@ -424,6 +445,7 @@ async function handleDeploy() {
       ssh_user: deployForm.ssh_user,
       ssh_password: deployForm.ssh_password,
       node_name: deployForm.node_name,
+      traffic_pool: deployForm.traffic_pool,
       center_url: deployForm.center_url,
       node_token: deployForm.node_token,
       transports,
@@ -526,6 +548,7 @@ function trafficSyncLabel(row) {
 function resetForm() {
   form.name = ''
   form.host = ''
+  form.traffic_pool = 'normal'
   form.transports = ['tcp']
   form.tcp_port = 443
   form.xhttp_port = 443
@@ -553,6 +576,7 @@ function showEditDialog(row) {
   editingId.value = row.id
   form.name = row.name
   form.host = row.host
+  form.traffic_pool = row.traffic_pool || 'normal'
   form.transports = [row.transport || 'tcp']
   form.tcp_port = (row.transport || 'tcp') === 'tcp' ? row.port : 443
   form.xhttp_port = row.transport === 'xhttp' ? row.port : 443
@@ -588,6 +612,7 @@ async function handleSave() {
     const payload = {
       name: form.name,
       host: form.host,
+      traffic_pool: form.traffic_pool,
       port: primaryTransport === 'xhttp' ? form.xhttp_port : form.tcp_port,
       transports,
       transport: primaryTransport,

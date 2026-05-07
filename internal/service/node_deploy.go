@@ -71,6 +71,7 @@ type DeployRequest struct {
 	CenterURL           string   `json:"center_url" binding:"required"`
 	NodeToken           string   `json:"node_token"`
 	NodeName            string   `json:"node_name"`
+	TrafficPool         string   `json:"traffic_pool"`
 	Transport           string   `json:"transport"`
 	Transports          []string `json:"transports"`
 	TCPPort             uint32   `json:"tcp_port"`
@@ -395,6 +396,7 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 	node := &model.Node{
 		Name:           nodeName,
 		Protocol:       "vless",
+		TrafficPool:    model.NormalizeTrafficPool(req.TrafficPool),
 		Host:           req.SSHHost,
 		ServerName:     "www.microsoft.com",
 		LineMode:       "direct_and_relay",
@@ -633,6 +635,7 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 			node := &model.Node{
 				Name:           nodeName,
 				Protocol:       "vless",
+				TrafficPool:    model.NormalizeTrafficPool(req.TrafficPool),
 				Host:           ip,
 				ServerName:     "www.microsoft.com",
 				LineMode:       "direct_and_relay",

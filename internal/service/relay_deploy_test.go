@@ -23,6 +23,7 @@ func setupRelayDeployTestDB(t *testing.T) *gorm.DB {
 		&model.RelayBackend{},
 		&model.RelayConfigTask{},
 	))
+	require.NoError(t, db.Exec("CREATE TABLE IF NOT EXISTS relay_config_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, relay_id INTEGER, action TEXT, payload TEXT, status TEXT, retry_count INTEGER, last_error TEXT, scheduled_at DATETIME, locked_at DATETIME, lock_token TEXT, executed_at DATETIME, idempotency_key TEXT)").Error)
 	return db
 }
 

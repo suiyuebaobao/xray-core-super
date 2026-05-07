@@ -121,13 +121,14 @@ func (h *AdminPlanHandler) Create(c *gin.Context) {
 	}
 
 	plan, err := h.planRepo.Create(c.Request.Context(), &model.Plan{
-		Name:         req.Name,
-		Price:        req.Price,
-		Currency:     req.Currency,
-		TrafficLimit: req.TrafficLimit,
-		DurationDays: req.DurationDays,
-		SortWeight:   req.SortWeight,
-		IsActive:     req.IsActive,
+		Name:                    req.Name,
+		Price:                   req.Price,
+		Currency:                req.Currency,
+		TrafficLimit:            req.TrafficLimit,
+		ResidentialTrafficLimit: req.ResidentialTrafficLimit,
+		DurationDays:            req.DurationDays,
+		SortWeight:              req.SortWeight,
+		IsActive:                req.IsActive,
 	})
 	if err != nil {
 		response.HandleError(c, response.ErrInternalServer)
@@ -166,6 +167,7 @@ func (h *AdminPlanHandler) Update(c *gin.Context) {
 	plan.Price = req.Price
 	plan.Currency = req.Currency
 	plan.TrafficLimit = req.TrafficLimit
+	plan.ResidentialTrafficLimit = req.ResidentialTrafficLimit
 	plan.DurationDays = req.DurationDays
 	plan.SortWeight = req.SortWeight
 	plan.IsActive = req.IsActive
@@ -723,6 +725,7 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 			node := &model.Node{
 				Name:           multiTransportNodeName(req.Name, option),
 				Protocol:       req.Protocol,
+				TrafficPool:    model.NormalizeTrafficPool(req.TrafficPool),
 				Host:           req.Host,
 				ServerName:     req.ServerName,
 				PublicKey:      req.PublicKey,
@@ -761,6 +764,7 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 	node := &model.Node{
 		Name:           req.Name,
 		Protocol:       req.Protocol,
+		TrafficPool:    model.NormalizeTrafficPool(req.TrafficPool),
 		Host:           req.Host,
 		ServerName:     req.ServerName,
 		PublicKey:      req.PublicKey,
@@ -812,6 +816,9 @@ func (h *AdminNodeHandler) Update(c *gin.Context) {
 	node.Name = req.Name
 	if req.Protocol != "" {
 		node.Protocol = req.Protocol
+	}
+	if req.TrafficPool != "" {
+		node.TrafficPool = model.NormalizeTrafficPool(req.TrafficPool)
 	}
 	if req.Transport == "" {
 		req.Transport = node.Transport
@@ -1036,9 +1043,12 @@ func (h *AdminUserHandler) List(c *gin.Context) {
 				item["subscription_expire_date"] = sub.ExpireDate
 				item["traffic_limit"] = sub.TrafficLimit
 				item["used_traffic"] = sub.UsedTraffic
-				item["traffic_unlimited"] = sub.TrafficLimit == 0
+				item["residential_traffic_limit"] = sub.ResidentialTrafficLimit
+				item["residential_used_traffic"] = sub.ResidentialUsedTraffic
+				item["traffic_unlimited"] = model.SubscriptionTrafficUnlimitedByPool(sub, model.TrafficPoolNormal)
 				item["remaining_traffic"] = remainingTraffic(sub)
 				item["traffic_usage_percent"] = trafficUsagePercent(sub)
+				item["traffic_pools"] = subscriptionTrafficPools(sub)
 				if h.planRepo != nil {
 					plan, ok := plans[sub.PlanID]
 					if !ok {
@@ -1100,10 +1110,7 @@ func (h *AdminUserHandler) userSubscriptionView(ctx context.Context, userID uint
 }
 
 func remainingTraffic(sub *model.UserSubscription) uint64 {
-	if sub == nil || sub.TrafficLimit == 0 || sub.UsedTraffic >= sub.TrafficLimit {
-		return 0
-	}
-	return sub.TrafficLimit - sub.UsedTraffic
+	return model.SubscriptionRemainingTrafficByPool(sub, model.TrafficPoolNormal)
 }
 
 func trafficUsagePercent(sub *model.UserSubscription) float64 {
@@ -1355,12 +1362,14 @@ func (h *AdminUserHandler) UpsertSubscription(c *gin.Context) {
 	}
 
 	var req struct {
-		PlanID        uint64  `json:"plan_id" binding:"required"`
-		Status        string  `json:"status" binding:"omitempty,oneof=ACTIVE EXPIRED SUSPENDED PENDING"`
-		ExpireDate    string  `json:"expire_date" binding:"required"`
-		TrafficLimit  uint64  `json:"traffic_limit" binding:"min=0"`
-		UsedTraffic   *uint64 `json:"used_traffic"`
-		GenerateToken bool    `json:"generate_token"`
+		PlanID                  uint64  `json:"plan_id" binding:"required"`
+		Status                  string  `json:"status" binding:"omitempty,oneof=ACTIVE EXPIRED SUSPENDED PENDING"`
+		ExpireDate              string  `json:"expire_date" binding:"required"`
+		TrafficLimit            uint64  `json:"traffic_limit" binding:"min=0"`
+		UsedTraffic             *uint64 `json:"used_traffic"`
+		ResidentialTrafficLimit *uint64 `json:"residential_traffic_limit"`
+		ResidentialUsedTraffic  *uint64 `json:"residential_used_traffic"`
+		GenerateToken           bool    `json:"generate_token"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.HandleError(c, response.ErrBadRequest)
@@ -1387,6 +1396,10 @@ func (h *AdminUserHandler) UpsertSubscription(c *gin.Context) {
 	if req.TrafficLimit == 0 {
 		req.TrafficLimit = plan.TrafficLimit
 	}
+	residentialTrafficLimit := plan.ResidentialTrafficLimit
+	if req.ResidentialTrafficLimit != nil {
+		residentialTrafficLimit = *req.ResidentialTrafficLimit
+	}
 
 	ctx := c.Request.Context()
 	oldSub, oldErr := h.subRepo.FindActiveByUserID(ctx, userID)
@@ -1403,6 +1416,10 @@ func (h *AdminUserHandler) UpsertSubscription(c *gin.Context) {
 		if req.UsedTraffic != nil {
 			usedTraffic = *req.UsedTraffic
 		}
+		residentialUsedTraffic := uint64(0)
+		if req.ResidentialUsedTraffic != nil {
+			residentialUsedTraffic = *req.ResidentialUsedTraffic
+		}
 
 		activeUserID := (*uint64)(nil)
 		if req.Status == "ACTIVE" {
@@ -1417,13 +1434,18 @@ func (h *AdminUserHandler) UpsertSubscription(c *gin.Context) {
 			if req.UsedTraffic == nil {
 				usedTraffic = sub.UsedTraffic
 			}
+			if req.ResidentialUsedTraffic == nil {
+				residentialUsedTraffic = sub.ResidentialUsedTraffic
+			}
 			updates := map[string]interface{}{
-				"plan_id":        req.PlanID,
-				"expire_date":    expireDate,
-				"traffic_limit":  req.TrafficLimit,
-				"used_traffic":   usedTraffic,
-				"status":         req.Status,
-				"active_user_id": activeUserID,
+				"plan_id":                   req.PlanID,
+				"expire_date":               expireDate,
+				"traffic_limit":             req.TrafficLimit,
+				"used_traffic":              usedTraffic,
+				"residential_traffic_limit": residentialTrafficLimit,
+				"residential_used_traffic":  residentialUsedTraffic,
+				"status":                    req.Status,
+				"active_user_id":            activeUserID,
 			}
 			if err := tx.Model(&model.UserSubscription{}).Where("id = ?", sub.ID).Updates(updates).Error; err != nil {
 				return err
@@ -1433,14 +1455,16 @@ func (h *AdminUserHandler) UpsertSubscription(c *gin.Context) {
 			}
 		} else {
 			savedSub = model.UserSubscription{
-				UserID:       userID,
-				PlanID:       req.PlanID,
-				StartDate:    now,
-				ExpireDate:   expireDate,
-				TrafficLimit: req.TrafficLimit,
-				UsedTraffic:  usedTraffic,
-				Status:       req.Status,
-				ActiveUserID: activeUserID,
+				UserID:                  userID,
+				PlanID:                  req.PlanID,
+				StartDate:               now,
+				ExpireDate:              expireDate,
+				TrafficLimit:            req.TrafficLimit,
+				UsedTraffic:             usedTraffic,
+				ResidentialTrafficLimit: residentialTrafficLimit,
+				ResidentialUsedTraffic:  residentialUsedTraffic,
+				Status:                  req.Status,
+				ActiveUserID:            activeUserID,
 			}
 			if err := tx.Create(&savedSub).Error; err != nil {
 				return err
@@ -1719,28 +1743,75 @@ func (h *AdminSubscriptionTokenHandler) tokenSubscriptionView(ctx context.Contex
 
 func subscriptionSummary(sub *model.UserSubscription) gin.H {
 	return gin.H{
-		"id":            sub.ID,
-		"user_id":       sub.UserID,
-		"plan_id":       sub.PlanID,
-		"start_date":    sub.StartDate,
-		"expire_date":   sub.ExpireDate,
-		"traffic_limit": sub.TrafficLimit,
-		"used_traffic":  sub.UsedTraffic,
-		"status":        sub.Status,
-		"created_at":    sub.CreatedAt,
-		"updated_at":    sub.UpdatedAt,
+		"id":                        sub.ID,
+		"user_id":                   sub.UserID,
+		"plan_id":                   sub.PlanID,
+		"start_date":                sub.StartDate,
+		"expire_date":               sub.ExpireDate,
+		"traffic_limit":             sub.TrafficLimit,
+		"used_traffic":              sub.UsedTraffic,
+		"residential_traffic_limit": sub.ResidentialTrafficLimit,
+		"residential_used_traffic":  sub.ResidentialUsedTraffic,
+		"traffic_pools":             subscriptionTrafficPools(sub),
+		"status":                    sub.Status,
+		"created_at":                sub.CreatedAt,
+		"updated_at":                sub.UpdatedAt,
 	}
 }
 
 func planSummary(plan *model.Plan) gin.H {
 	return gin.H{
-		"id":            plan.ID,
-		"name":          plan.Name,
-		"price":         plan.Price,
-		"currency":      plan.Currency,
-		"traffic_limit": plan.TrafficLimit,
-		"duration_days": plan.DurationDays,
-		"is_active":     plan.IsActive,
+		"id":                        plan.ID,
+		"name":                      plan.Name,
+		"price":                     plan.Price,
+		"currency":                  plan.Currency,
+		"traffic_limit":             plan.TrafficLimit,
+		"residential_traffic_limit": plan.ResidentialTrafficLimit,
+		"traffic_pools":             planTrafficPools(plan),
+		"duration_days":             plan.DurationDays,
+		"is_active":                 plan.IsActive,
+	}
+}
+
+func planTrafficPools(plan *model.Plan) []gin.H {
+	if plan == nil {
+		return []gin.H{}
+	}
+	return []gin.H{
+		{
+			"code":          model.TrafficPoolNormal,
+			"name":          model.TrafficPoolDisplayName(model.TrafficPoolNormal),
+			"traffic_limit": plan.TrafficLimit,
+		},
+		{
+			"code":          model.TrafficPoolResidential,
+			"name":          model.TrafficPoolDisplayName(model.TrafficPoolResidential),
+			"traffic_limit": plan.ResidentialTrafficLimit,
+		},
+	}
+}
+
+func subscriptionTrafficPools(sub *model.UserSubscription) []gin.H {
+	if sub == nil {
+		return []gin.H{}
+	}
+	return []gin.H{
+		{
+			"code":              model.TrafficPoolNormal,
+			"name":              model.TrafficPoolDisplayName(model.TrafficPoolNormal),
+			"traffic_limit":     sub.TrafficLimit,
+			"used_traffic":      sub.UsedTraffic,
+			"remaining_traffic": model.SubscriptionRemainingTrafficByPool(sub, model.TrafficPoolNormal),
+			"unlimited":         model.SubscriptionTrafficUnlimitedByPool(sub, model.TrafficPoolNormal),
+		},
+		{
+			"code":              model.TrafficPoolResidential,
+			"name":              model.TrafficPoolDisplayName(model.TrafficPoolResidential),
+			"traffic_limit":     sub.ResidentialTrafficLimit,
+			"used_traffic":      sub.ResidentialUsedTraffic,
+			"remaining_traffic": model.SubscriptionRemainingTrafficByPool(sub, model.TrafficPoolResidential),
+			"unlimited":         false,
+		},
 	}
 }
 

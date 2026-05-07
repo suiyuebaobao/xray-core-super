@@ -28,6 +28,10 @@ type NodeAccessService struct {
 	cfg      *config.Config
 }
 
+type subscriptionTaskFilter struct {
+	TrafficPool string
+}
+
 // NewNodeAccessService 创建节点访问同步服务。
 func NewNodeAccessService(taskRepo *repository.NodeAccessTaskRepository, nodeRepo *repository.NodeRepository, planRepo *repository.PlanRepository, subRepo *repository.SubscriptionRepository, userRepo *repository.UserRepository, cfg *config.Config) *NodeAccessService {
 	return &NodeAccessService{
@@ -58,6 +62,12 @@ func (s *NodeAccessService) TriggerOnExpire(ctx context.Context, userID uint64, 
 // TriggerOnOverTraffic 订阅超额时触发节点禁用。
 func (s *NodeAccessService) TriggerOnOverTraffic(ctx context.Context, userID uint64, subID uint64, planID uint64) error {
 	return s.createTasksForSubscription(ctx, userID, subID, planID, "DISABLE_USER")
+}
+
+func (s *NodeAccessService) TriggerOnOverTrafficByPool(ctx context.Context, userID uint64, subID uint64, planID uint64, trafficPool string) error {
+	return s.createTasksForSubscriptionWithFilter(ctx, userID, subID, planID, "DISABLE_USER", subscriptionTaskFilter{
+		TrafficPool: model.NormalizeTrafficPool(trafficPool),
+	})
 }
 
 // TriggerForNode 为单个节点创建指定订阅的访问任务。
@@ -131,6 +141,10 @@ func (s *NodeAccessService) TriggerForNodeGroupNodes(ctx context.Context, groupI
 
 // createTasksForSubscription 为订阅创建节点访问任务。
 func (s *NodeAccessService) createTasksForSubscription(ctx context.Context, userID uint64, subID uint64, planID uint64, action string) error {
+	return s.createTasksForSubscriptionWithFilter(ctx, userID, subID, planID, action, subscriptionTaskFilter{})
+}
+
+func (s *NodeAccessService) createTasksForSubscriptionWithFilter(ctx context.Context, userID uint64, subID uint64, planID uint64, action string, filter subscriptionTaskFilter) error {
 	// 查询套餐关联的节点组
 	planNodeGroups, err := s.planRepo.FindNodeGroupIDs(ctx, planID)
 	if err != nil {
@@ -162,6 +176,9 @@ func (s *NodeAccessService) createTasksForSubscription(ctx context.Context, user
 		}
 		for _, node := range nodes {
 			if _, ok := seenNodes[node.ID]; ok {
+				continue
+			}
+			if filter.TrafficPool != "" && model.NormalizeTrafficPool(node.TrafficPool) != model.NormalizeTrafficPool(filter.TrafficPool) {
 				continue
 			}
 			seenNodes[node.ID] = struct{}{}

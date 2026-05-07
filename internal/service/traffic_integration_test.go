@@ -67,11 +67,11 @@ func TestTrafficService_ProcessTrafficReport_CreatesBaseline(t *testing.T) {
 
 	// 创建用户
 	user := &model.User{
-		UUID:        "test-uuid",
-		Username:    "testuser",
+		UUID:         "test-uuid",
+		Username:     "testuser",
 		PasswordHash: "hash",
-		XrayUserKey: "testuser@test.local",
-		Status:      "active",
+		XrayUserKey:  "testuser@test.local",
+		Status:       "active",
 	}
 	require.NoError(t, db.Create(user).Error)
 
@@ -89,6 +89,10 @@ func TestTrafficService_ProcessTrafficReport_CreatesBaseline(t *testing.T) {
 
 	// 创建节点仓库
 	nodeRepo := repository.NewNodeRepository(db)
+	require.NoError(t, db.Create(&model.Node{
+		ID: 1, Name: "traffic-node-1", Protocol: "vless", TrafficPool: model.TrafficPoolNormal,
+		Host: "127.0.0.1", Port: 443, AgentBaseURL: "http://127.0.0.1", AgentTokenHash: "hash", IsEnabled: true,
+	}).Error)
 
 	// 创建流量采集服务
 	trafficSvc := service.NewTrafficService(db, snapshotRepo, ledgerRepo, subRepo, nodeRepo, userRepo, nil)
@@ -127,11 +131,11 @@ func TestTrafficService_ProcessTrafficReport_WithPreviousSnapshot(t *testing.T) 
 
 	// 创建用户
 	user := &model.User{
-		UUID:        "test-uuid",
-		Username:    "testuser",
+		UUID:         "test-uuid",
+		Username:     "testuser",
 		PasswordHash: "hash",
-		XrayUserKey: "testuser@test.local",
-		Status:      "active",
+		XrayUserKey:  "testuser@test.local",
+		Status:       "active",
 	}
 	require.NoError(t, db.Create(user).Error)
 
@@ -159,6 +163,10 @@ func TestTrafficService_ProcessTrafficReport_WithPreviousSnapshot(t *testing.T) 
 
 	// 创建节点仓库
 	nodeRepo := repository.NewNodeRepository(db)
+	require.NoError(t, db.Create(&model.Node{
+		ID: 1, Name: "traffic-node-1", Protocol: "vless", TrafficPool: model.TrafficPoolNormal,
+		Host: "127.0.0.1", Port: 443, AgentBaseURL: "http://127.0.0.1", AgentTokenHash: "hash", IsEnabled: true,
+	}).Error)
 
 	// 创建流量采集服务
 	trafficSvc := service.NewTrafficService(db, snapshotRepo, ledgerRepo, subRepo, nodeRepo, userRepo, nil)
@@ -167,8 +175,8 @@ func TestTrafficService_ProcessTrafficReport_WithPreviousSnapshot(t *testing.T) 
 	items := []service.TrafficItem{
 		{
 			XrayUserKey:   "testuser@test.local",
-			UplinkTotal:   1500,  // 增量 500
-			DownlinkTotal: 3000,  // 增量 1000
+			UplinkTotal:   1500, // 增量 500
+			DownlinkTotal: 3000, // 增量 1000
 		},
 	}
 
@@ -205,11 +213,11 @@ func TestTrafficService_ProcessTrafficReport_CounterReset(t *testing.T) {
 
 	// 创建用户
 	user := &model.User{
-		UUID:        "test-uuid",
-		Username:    "testuser",
+		UUID:         "test-uuid",
+		Username:     "testuser",
 		PasswordHash: "hash",
-		XrayUserKey: "testuser@test.local",
-		Status:      "active",
+		XrayUserKey:  "testuser@test.local",
+		Status:       "active",
 	}
 	require.NoError(t, db.Create(user).Error)
 
@@ -237,6 +245,10 @@ func TestTrafficService_ProcessTrafficReport_CounterReset(t *testing.T) {
 
 	// 创建节点仓库
 	nodeRepo := repository.NewNodeRepository(db)
+	require.NoError(t, db.Create(&model.Node{
+		ID: 1, Name: "traffic-node-1", Protocol: "vless", TrafficPool: model.TrafficPoolNormal,
+		Host: "127.0.0.1", Port: 443, AgentBaseURL: "http://127.0.0.1", AgentTokenHash: "hash", IsEnabled: true,
+	}).Error)
 
 	// 创建流量采集服务
 	trafficSvc := service.NewTrafficService(db, snapshotRepo, ledgerRepo, subRepo, nodeRepo, userRepo, nil)
@@ -245,8 +257,8 @@ func TestTrafficService_ProcessTrafficReport_CounterReset(t *testing.T) {
 	items := []service.TrafficItem{
 		{
 			XrayUserKey:   "testuser@test.local",
-			UplinkTotal:   1000,  // 比历史快照小
-			DownlinkTotal: 2000,  // 比历史快照小
+			UplinkTotal:   1000, // 比历史快照小
+			DownlinkTotal: 2000, // 比历史快照小
 		},
 	}
 

@@ -202,6 +202,7 @@ func sanitizeNodeDeployRequest(req *service.DeployRequest) map[string]interface{
 		"center_url":            req.CenterURL,
 		"target_server_ip":      req.SSHHost,
 		"node_name":             req.NodeName,
+		"traffic_pool":          req.TrafficPool,
 		"transport":             req.Transport,
 		"transports":            req.Transports,
 		"tcp_port":              req.TCPPort,

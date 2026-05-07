@@ -5,8 +5,94 @@
 package model
 
 import (
+	"strings"
 	"time"
 )
+
+const (
+	TrafficPoolNormal      = "normal"
+	TrafficPoolResidential = "residential"
+)
+
+func NormalizeTrafficPool(pool string) string {
+	switch strings.ToLower(strings.TrimSpace(pool)) {
+	case TrafficPoolResidential:
+		return TrafficPoolResidential
+	default:
+		return TrafficPoolNormal
+	}
+}
+
+func TrafficPoolDisplayName(pool string) string {
+	if NormalizeTrafficPool(pool) == TrafficPoolResidential {
+		return "家宽流量"
+	}
+	return "普通流量"
+}
+
+func PlanTrafficLimitByPool(plan *Plan, pool string) uint64 {
+	if plan == nil {
+		return 0
+	}
+	if NormalizeTrafficPool(pool) == TrafficPoolResidential {
+		return plan.ResidentialTrafficLimit
+	}
+	return plan.TrafficLimit
+}
+
+func SubscriptionTrafficLimitByPool(sub *UserSubscription, pool string) uint64 {
+	if sub == nil {
+		return 0
+	}
+	if NormalizeTrafficPool(pool) == TrafficPoolResidential {
+		return sub.ResidentialTrafficLimit
+	}
+	return sub.TrafficLimit
+}
+
+func SubscriptionUsedTrafficByPool(sub *UserSubscription, pool string) uint64 {
+	if sub == nil {
+		return 0
+	}
+	if NormalizeTrafficPool(pool) == TrafficPoolResidential {
+		return sub.ResidentialUsedTraffic
+	}
+	return sub.UsedTraffic
+}
+
+func SubscriptionTrafficUnlimitedByPool(sub *UserSubscription, pool string) bool {
+	if sub == nil {
+		return false
+	}
+	return NormalizeTrafficPool(pool) == TrafficPoolNormal && sub.TrafficLimit == 0
+}
+
+func SubscriptionRemainingTrafficByPool(sub *UserSubscription, pool string) uint64 {
+	if sub == nil {
+		return 0
+	}
+	if SubscriptionTrafficUnlimitedByPool(sub, pool) {
+		return 0
+	}
+	limit := SubscriptionTrafficLimitByPool(sub, pool)
+	used := SubscriptionUsedTrafficByPool(sub, pool)
+	if used >= limit {
+		return 0
+	}
+	return limit - used
+}
+
+func SubscriptionTrafficAvailableByPool(sub *UserSubscription, pool string) bool {
+	if sub == nil {
+		return false
+	}
+	if SubscriptionTrafficUnlimitedByPool(sub, pool) {
+		return true
+	}
+	limit := SubscriptionTrafficLimitByPool(sub, pool)
+	used := SubscriptionUsedTrafficByPool(sub, pool)
+	return limit > 0 && used < limit
+}
 
 // User 用户模型。
 type User struct {
@@ -85,17 +171,19 @@ func (u *User) ToPublic() *UserPublic {
 
 // UserSubscription 用户订阅模型。
 type UserSubscription struct {
-	ID           uint64    `gorm:"primaryKey;column:id" json:"id"`
-	UserID       uint64    `gorm:"column:user_id;index" json:"user_id"`
-	PlanID       uint64    `gorm:"column:plan_id" json:"plan_id"`
-	StartDate    time.Time `gorm:"column:start_date" json:"start_date"`
-	ExpireDate   time.Time `gorm:"column:expire_date;index" json:"expire_date"`
-	TrafficLimit uint64    `gorm:"column:traffic_limit" json:"traffic_limit"`
-	UsedTraffic  uint64    `gorm:"column:used_traffic" json:"used_traffic"`
-	Status       string    `gorm:"column:status;type:varchar(16);index" json:"status"`
-	ActiveUserID *uint64   `gorm:"column:active_user_id;uniqueIndex" json:"-"`
-	CreatedAt    time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
-	UpdatedAt    time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+	ID                      uint64    `gorm:"primaryKey;column:id" json:"id"`
+	UserID                  uint64    `gorm:"column:user_id;index" json:"user_id"`
+	PlanID                  uint64    `gorm:"column:plan_id" json:"plan_id"`
+	StartDate               time.Time `gorm:"column:start_date" json:"start_date"`
+	ExpireDate              time.Time `gorm:"column:expire_date;index" json:"expire_date"`
+	TrafficLimit            uint64    `gorm:"column:traffic_limit" json:"traffic_limit"`
+	UsedTraffic             uint64    `gorm:"column:used_traffic" json:"used_traffic"`
+	ResidentialTrafficLimit uint64    `gorm:"column:residential_traffic_limit" json:"residential_traffic_limit"`
+	ResidentialUsedTraffic  uint64    `gorm:"column:residential_used_traffic" json:"residential_used_traffic"`
+	Status                  string    `gorm:"column:status;type:varchar(16);index" json:"status"`
+	ActiveUserID            *uint64   `gorm:"column:active_user_id;uniqueIndex" json:"-"`
+	CreatedAt               time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	UpdatedAt               time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
 }
 
 // TableName 指定表名。
@@ -136,18 +224,19 @@ func (RefreshToken) TableName() string {
 
 // Plan 套餐模型。
 type Plan struct {
-	ID           uint64    `gorm:"primaryKey;column:id" json:"id"`
-	Name         string    `gorm:"column:name;type:varchar(128)" json:"name"`
-	Price        float64   `gorm:"column:price;type:decimal(10,2)" json:"price"`
-	Currency     string    `gorm:"column:currency;type:varchar(8);default:USDT" json:"currency"`
-	TrafficLimit uint64    `gorm:"column:traffic_limit" json:"traffic_limit"`
-	DurationDays uint32    `gorm:"column:duration_days" json:"duration_days"`
-	SortWeight   int       `gorm:"column:sort_weight;default:0" json:"sort_weight"`
-	IsActive     bool      `gorm:"column:is_active;default:true;index" json:"is_active"`
-	IsDefault    bool      `gorm:"column:is_default;default:false;index" json:"is_default"`
-	IsDeleted    bool      `gorm:"column:is_deleted;default:false;index" json:"is_deleted"`
-	CreatedAt    time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
-	UpdatedAt    time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+	ID                      uint64    `gorm:"primaryKey;column:id" json:"id"`
+	Name                    string    `gorm:"column:name;type:varchar(128)" json:"name"`
+	Price                   float64   `gorm:"column:price;type:decimal(10,2)" json:"price"`
+	Currency                string    `gorm:"column:currency;type:varchar(8);default:USDT" json:"currency"`
+	TrafficLimit            uint64    `gorm:"column:traffic_limit" json:"traffic_limit"`
+	ResidentialTrafficLimit uint64    `gorm:"column:residential_traffic_limit" json:"residential_traffic_limit"`
+	DurationDays            uint32    `gorm:"column:duration_days" json:"duration_days"`
+	SortWeight              int       `gorm:"column:sort_weight;default:0" json:"sort_weight"`
+	IsActive                bool      `gorm:"column:is_active;default:true;index" json:"is_active"`
+	IsDefault               bool      `gorm:"column:is_default;default:false;index" json:"is_default"`
+	IsDeleted               bool      `gorm:"column:is_deleted;default:false;index" json:"is_deleted"`
+	CreatedAt               time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	UpdatedAt               time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
 }
 
 // TableName 指定表名。
@@ -157,24 +246,26 @@ func (Plan) TableName() string {
 
 // CreatePlanRequest 创建套餐请求。
 type CreatePlanRequest struct {
-	Name         string  `json:"name" binding:"required"`
-	Price        float64 `json:"price" binding:"required,min=0"`
-	Currency     string  `json:"currency" default:"USDT"`
-	TrafficLimit uint64  `json:"traffic_limit" binding:"min=0"`
-	DurationDays uint32  `json:"duration_days" binding:"min=0"`
-	SortWeight   int     `json:"sort_weight"`
-	IsActive     bool    `json:"is_active"`
+	Name                    string  `json:"name" binding:"required"`
+	Price                   float64 `json:"price" binding:"required,min=0"`
+	Currency                string  `json:"currency" default:"USDT"`
+	TrafficLimit            uint64  `json:"traffic_limit" binding:"min=0"`
+	ResidentialTrafficLimit uint64  `json:"residential_traffic_limit" binding:"min=0"`
+	DurationDays            uint32  `json:"duration_days" binding:"min=0"`
+	SortWeight              int     `json:"sort_weight"`
+	IsActive                bool    `json:"is_active"`
 }
 
 // UpdatePlanRequest 更新套餐请求。
 type UpdatePlanRequest struct {
-	Name         string  `json:"name" binding:"required"`
-	Price        float64 `json:"price" binding:"required,min=0"`
-	Currency     string  `json:"currency"`
-	TrafficLimit uint64  `json:"traffic_limit" binding:"min=0"`
-	DurationDays uint32  `json:"duration_days" binding:"min=0"`
-	SortWeight   int     `json:"sort_weight"`
-	IsActive     bool    `json:"is_active"`
+	Name                    string  `json:"name" binding:"required"`
+	Price                   float64 `json:"price" binding:"required,min=0"`
+	Currency                string  `json:"currency"`
+	TrafficLimit            uint64  `json:"traffic_limit" binding:"min=0"`
+	ResidentialTrafficLimit uint64  `json:"residential_traffic_limit" binding:"min=0"`
+	DurationDays            uint32  `json:"duration_days" binding:"min=0"`
+	SortWeight              int     `json:"sort_weight"`
+	IsActive                bool    `json:"is_active"`
 }
 
 // NodeGroup 节点分组模型。
@@ -251,6 +342,7 @@ type Node struct {
 	Name                 string     `gorm:"column:name;type:varchar(128)" json:"name"`
 	Protocol             string     `gorm:"column:protocol;type:varchar(32);default:vless" json:"protocol"`
 	Transport            string     `gorm:"column:transport;type:varchar(32);default:tcp" json:"transport"`
+	TrafficPool          string     `gorm:"column:traffic_pool;type:varchar(32);default:normal" json:"traffic_pool"`
 	Host                 string     `gorm:"column:host;type:varchar(255)" json:"host"`
 	Port                 uint32     `gorm:"column:port;default:443" json:"port"`
 	ServerName           string     `gorm:"column:server_name;type:varchar(255)" json:"server_name"`
@@ -295,6 +387,7 @@ type CreateNodeRequest struct {
 	Protocol     string   `json:"protocol" default:"vless"`
 	Transport    string   `json:"transport" binding:"omitempty,oneof=tcp xhttp"`
 	Transports   []string `json:"transports" binding:"omitempty,dive,oneof=tcp xhttp"`
+	TrafficPool  string   `json:"traffic_pool" binding:"omitempty,oneof=normal residential"`
 	Host         string   `json:"host" binding:"required"`
 	Port         uint32   `json:"port" default:"443"`
 	TCPPort      uint32   `json:"tcp_port"`
@@ -319,6 +412,7 @@ type UpdateNodeRequest struct {
 	Name         string `json:"name" binding:"required"`
 	Protocol     string `json:"protocol"`
 	Transport    string `json:"transport" binding:"omitempty,oneof=tcp xhttp"`
+	TrafficPool  string `json:"traffic_pool" binding:"omitempty,oneof=normal residential"`
 	Host         string `json:"host" binding:"required"`
 	Port         uint32 `json:"port"`
 	ServerName   string `json:"server_name"`
@@ -627,6 +721,7 @@ type UsageLedger struct {
 	UserID         uint64    `gorm:"column:user_id;index" json:"user_id"`
 	SubscriptionID *uint64   `gorm:"column:subscription_id;index" json:"subscription_id"`
 	NodeID         uint64    `gorm:"column:node_id" json:"node_id"`
+	TrafficPool    string    `gorm:"column:traffic_pool;type:varchar(32);default:normal" json:"traffic_pool"`
 	DeltaUpload    uint64    `gorm:"column:delta_upload" json:"delta_upload"`
 	DeltaDownload  uint64    `gorm:"column:delta_download" json:"delta_download"`
 	DeltaTotal     uint64    `gorm:"column:delta_total" json:"delta_total"`

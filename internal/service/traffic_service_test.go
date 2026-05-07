@@ -65,7 +65,7 @@ func setupTrafficOverQuotaDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-// TestCheckAndHandleOverQuota_TrafficExceeded 测试流量超额触发 SUSPENDED。
+// TestCheckAndHandleOverQuota_TrafficExceeded 测试普通流量超额只触发对应池节点禁用任务。
 func TestCheckAndHandleOverQuota_TrafficExceeded(t *testing.T) {
 	db := setupTrafficOverQuotaDB(t)
 	cfg := &config.Config{JWTSecret: "test-secret", JWTExpiresIn: 24 * time.Hour, TaskRetryLimit: 10}
@@ -109,7 +109,11 @@ func TestCheckAndHandleOverQuota_TrafficExceeded(t *testing.T) {
 
 	var updatedSub model.UserSubscription
 	db.First(&updatedSub, sub.ID)
-	assert.Equal(t, "SUSPENDED", updatedSub.Status)
+	assert.Equal(t, "ACTIVE", updatedSub.Status)
+
+	var taskCount int64
+	db.Model(&model.NodeAccessTask{}).Where("node_id = ? AND action = ?", node.ID, "DISABLE_USER").Count(&taskCount)
+	assert.GreaterOrEqual(t, taskCount, int64(1))
 }
 
 // TestCheckAndHandleOverQuota_NoOverage 测试未超额时不触发操作。

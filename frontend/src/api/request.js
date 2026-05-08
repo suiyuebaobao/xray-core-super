@@ -64,13 +64,26 @@ const alovaInstance = createAlova({
           }
           const error = new Error(data.message || '请求失败')
           error.code = data.code
+          error.data = data.data
           throw error
         }
         return data
       })
     },
     // 失败响应
-    onError(error) {
+    async onError(error) {
+      if (error.response) {
+        try {
+          const data = await error.response.clone().json()
+          if (data?.message) {
+            error.message = data.message
+          }
+          error.code = data?.code
+          error.data = data?.data
+        } catch {
+          // 非 JSON 错误响应保持原始错误，方便调用方按网络错误处理。
+        }
+      }
       // HTTP 401 也尝试刷新
       if (error.response && error.response.status === 401) {
         const userStore = useUserStore()

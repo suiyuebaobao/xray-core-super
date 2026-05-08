@@ -119,6 +119,15 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - 隐藏出口 IP 时，订阅只下发中转线路，并在出口节点防火墙只放行中转服务器 IP。
 - 涉及中转数据表、node-agent relay 模式、订阅输出或部署流程时，必须同步更新 `开发方案.md`、`文档/中转/中转设计.md`、接口文档和架构决策。
 
+## Agent 中心地址容灾规则
+
+- node-agent 必须支持多个中心入口：`CENTER_SERVER_URL` 保留为主入口，`CENTER_SERVER_URLS` 为逗号、空格或换行分隔的完整 http/https 地址列表；新部署必须同时写入两者。
+- node-agent 对所有中心请求必须从当前可用入口开始尝试，失败后轮询备用入口；某个入口请求成功后必须记住为当前 active center。
+- 一键部署出口节点和中转节点必须提供“备用中心地址”输入，并把主中心和备用中心归一化写入 agent 容器环境变量；当前控制面主域名为 `leiyunai.fun`，备用 IP 为 `154.219.106.105`、`154.219.106.53`，后端在任一入口出现时自动补齐另外两个入口。
+- 控制平台迁移或域名/IP 不可用时，优先依赖 agent 多中心自动切换；最后兜底才由管理员通过后台“修复中心”发起中心 SSH 到节点机器，重建 Docker agent 或更新 systemd drop-in 并重启 agent。
+- SSH 兜底接口为 `POST /api/admin/nodes/repair-center`，可指定 `node_id`、`node_host_id` 或 `relay_id` 等待新心跳确认；该接口只能保存脱敏部署日志，不得记录 SSH 密码、完整 Token 或私钥。
+- 修改 `CENTER_SERVER_URLS`、一键部署中心地址、SSH 兜底修复脚本或 agent 中心切换逻辑时，必须同步更新三份规则文件、`开发方案.md`、节点代理部署指南、管理接口文档、运维手册和页面清单，并运行 `go test ./...`、前端构建、Compose 配置校验和 Playwright smoke。
+
 ## 规则文件同步要求
 
 - 本仓库规则文件包括 `CLAUDE.md`、`AGENTS.md`、`QWEN.md`。

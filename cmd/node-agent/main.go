@@ -83,6 +83,7 @@ func getIntEnv(key string, defaultVal int) int {
 // Config node-agent 配置。
 type Config struct {
 	CenterServerURL   string // 中心服务 API 地址
+	CenterServerURLs  []string
 	AgentRole         string // exit 或 relay
 	NodeID            uint64 // 节点 ID
 	NodeToken         string // 节点鉴权 Token（明文传输，服务端只保存哈希）
@@ -117,7 +118,8 @@ const defaultXrayAPIServer = "127.0.0.1:10085"
 // loadConfig 从环境变量加载配置。
 func loadConfig() *Config {
 	cfg := &Config{
-		CenterServerURL:   getEnv("CENTER_SERVER_URL", ""),
+		CenterServerURL:   strings.TrimSpace(getEnv("CENTER_SERVER_URL", "")),
+		CenterServerURLs:  parseCenterServerURLs(getEnv("CENTER_SERVER_URLS", ""), getEnv("CENTER_SERVER_URL", "")),
 		AgentRole:         getEnv("AGENT_ROLE", "exit"),
 		XrayConfigPath:    getEnv("XRAY_CONFIG_PATH", "/etc/xray/config.json"),
 		XrayRestartCmd:    getEnv("XRAY_RESTART_CMD", "systemctl restart xray"),
@@ -132,9 +134,10 @@ func loadConfig() *Config {
 		TrafficQueueLimit: getIntEnv("TRAFFIC_QUEUE_LIMIT", 720),
 	}
 
-	if cfg.CenterServerURL == "" {
-		log.Fatal("[agent] CENTER_SERVER_URL is required")
+	if len(cfg.CenterServerURLs) == 0 {
+		log.Fatal("[agent] CENTER_SERVER_URL or CENTER_SERVER_URLS is required")
 	}
+	cfg.CenterServerURL = cfg.CenterServerURLs[0]
 
 	switch cfg.AgentRole {
 	case "exit", "":
@@ -188,6 +191,90 @@ func loadConfig() *Config {
 	}
 
 	return cfg
+}
+
+func parseCenterServerURLs(primaryList string, legacyURL string) []string {
+	rawValues := []string{primaryList, legacyURL}
+	seen := make(map[string]struct{})
+	urls := make([]string, 0, 2)
+	add := func(raw string) {
+		for _, item := range strings.FieldsFunc(raw, func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+		}) {
+			candidate := normalizeCenterServerURL(item)
+			if candidate == "" {
+				continue
+			}
+			if _, exists := seen[candidate]; exists {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			urls = append(urls, candidate)
+		}
+	}
+	for _, raw := range rawValues {
+		add(raw)
+	}
+	for _, value := range append([]string(nil), urls...) {
+		for _, fallback := range knownCenterServerFallbackURLs(value) {
+			add(fallback)
+		}
+	}
+	return urls
+}
+
+func normalizeCenterServerURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return ""
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func knownCenterServerFallbackURLs(raw string) []string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil
+	}
+	var hostnames []string
+	switch strings.ToLower(parsed.Hostname()) {
+	case "leiyunai.fun":
+		hostnames = []string{"154.219.106.105", "154.219.106.53"}
+	case "154.219.106.105":
+		hostnames = []string{"leiyunai.fun", "154.219.106.53"}
+	case "154.219.106.53":
+		hostnames = []string{"leiyunai.fun", "154.219.106.105"}
+	default:
+		return nil
+	}
+	result := make([]string, 0, len(hostnames))
+	for _, hostname := range hostnames {
+		clone := *parsed
+		clone.Host = replaceURLHostname(&clone, hostname)
+		if normalized := normalizeCenterServerURL(clone.String()); normalized != "" {
+			result = append(result, normalized)
+		}
+	}
+	return result
+}
+
+func replaceURLHostname(parsed *url.URL, hostname string) string {
+	if port := parsed.Port(); port != "" {
+		return net.JoinHostPort(hostname, port)
+	}
+	return hostname
 }
 
 func loadMultiNodeConfig() ([]MultiExitNodeConfig, error) {
@@ -508,6 +595,8 @@ type VLESSClient struct {
 type Agent struct {
 	cfg          *Config
 	httpClient   *http.Client
+	centerMu     sync.RWMutex
+	centerIndex  int
 	mu           sync.RWMutex
 	traffic      map[string]*TrafficItem // xrayUserKey -> traffic
 	queueMu      sync.Mutex
@@ -531,6 +620,44 @@ func (a *Agent) multiNodeByID(nodeID uint64) (MultiExitNodeConfig, bool) {
 		}
 	}
 	return MultiExitNodeConfig{}, false
+}
+
+func (a *Agent) centerServerURLs() []string {
+	if len(a.cfg.CenterServerURLs) > 0 {
+		return append([]string(nil), a.cfg.CenterServerURLs...)
+	}
+	if normalized := normalizeCenterServerURL(a.cfg.CenterServerURL); normalized != "" {
+		return []string{normalized}
+	}
+	return nil
+}
+
+func (a *Agent) activeCenterServerURL() string {
+	urls := a.centerServerURLs()
+	if len(urls) == 0 {
+		return ""
+	}
+	a.centerMu.RLock()
+	idx := a.centerIndex
+	a.centerMu.RUnlock()
+	if idx < 0 || idx >= len(urls) {
+		idx = 0
+	}
+	return urls[idx]
+}
+
+func (a *Agent) markCenterSuccess(index int) {
+	urls := a.centerServerURLs()
+	if index < 0 || index >= len(urls) {
+		return
+	}
+	a.centerMu.Lock()
+	defer a.centerMu.Unlock()
+	if a.centerIndex != index {
+		log.Printf("[agent] switched center server to %s", urls[index])
+	}
+	a.centerIndex = index
+	a.cfg.CenterServerURL = urls[index]
 }
 
 // isContainerEnv 检测是否在容器环境中。
@@ -1378,7 +1505,10 @@ WantedBy=multi-user.target
 // Run 启动 agent 主循环。
 func (a *Agent) Run() {
 	log.Printf("[agent] starting node-agent v1.0.0")
-	log.Printf("[agent] center server: %s", a.cfg.CenterServerURL)
+	log.Printf("[agent] center server: %s", a.activeCenterServerURL())
+	if len(a.centerServerURLs()) > 1 {
+		log.Printf("[agent] center server fallbacks: %s", strings.Join(a.centerServerURLs(), ","))
+	}
 	log.Printf("[agent] role: %s", a.cfg.AgentRole)
 	if a.cfg.AgentRole == "relay" {
 		a.runRelay()
@@ -2870,29 +3000,61 @@ func (a *Agent) postJSON(ctx context.Context, path string, reqBody interface{}, 
 		return fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := a.cfg.CenterServerURL + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+	urls := a.centerServerURLs()
+	if len(urls) == 0 {
+		return fmt.Errorf("center server URL is not configured")
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("do request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	a.centerMu.RLock()
+	startIndex := a.centerIndex
+	a.centerMu.RUnlock()
+	if startIndex < 0 || startIndex >= len(urls) {
+		startIndex = 0
 	}
 
-	if respBody != nil {
-		return json.NewDecoder(resp.Body).Decode(respBody)
+	var lastErr error
+	for attempt := 0; attempt < len(urls); attempt++ {
+		index := (startIndex + attempt) % len(urls)
+		centerURL := urls[index]
+		requestURL := centerURL + path
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(data))
+		if err != nil {
+			lastErr = fmt.Errorf("create request for %s: %w", centerURL, err)
+			continue
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := a.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("do request to %s: %w", centerURL, err)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("unexpected status from %s: %d", centerURL, resp.StatusCode)
+			continue
+		}
+
+		if respBody != nil {
+			err = json.NewDecoder(resp.Body).Decode(respBody)
+		}
+		_ = resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("decode response from %s: %w", centerURL, err)
+			continue
+		}
+
+		a.markCenterSuccess(index)
+		return nil
 	}
 
-	return nil
+	if lastErr == nil {
+		lastErr = fmt.Errorf("all center servers failed")
+	}
+	return lastErr
 }
 
 func main() {

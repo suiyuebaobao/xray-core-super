@@ -94,6 +94,45 @@ func TestNormalizeDeployUint64IDs_RejectsZero(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestNormalizeCenterURLList_DedupesPrimaryAndFallbacks(t *testing.T) {
+	values := normalizeCenterURLList("https://api.example.com/", []string{
+		"https://api.example.com",
+		"http://1.2.3.4:80",
+		"https://backup.example.net, http://1.2.3.4:80",
+		"ftp://ignored.example.test",
+	})
+
+	require.Equal(t, []string{
+		"https://api.example.com",
+		"http://1.2.3.4:80",
+		"https://backup.example.net",
+	}, values)
+	require.Equal(t, "https://api.example.com,http://1.2.3.4:80,https://backup.example.net", centerURLsEnvValue("https://api.example.com/", values[1:]))
+}
+
+func TestNormalizeDeployCenterRequest_UsesFirstValidAsPrimary(t *testing.T) {
+	req := &DeployRequest{
+		CenterURL:  "not-a-url",
+		CenterURLs: []string{"http://leiyunai.fun/", "http://154.219.106.105/", "http://154.219.106.53"},
+	}
+
+	require.NoError(t, normalizeDeployCenterRequest(req))
+	require.Equal(t, "http://leiyunai.fun", req.CenterURL)
+	require.Equal(t, []string{"http://154.219.106.105", "http://154.219.106.53"}, req.CenterURLs)
+}
+
+func TestNormalizeCenterURLList_AddsKnownControlPlaneFallback(t *testing.T) {
+	values := normalizeCenterURLList("http://154.219.106.105", nil)
+
+	require.Equal(t, []string{"http://154.219.106.105", "http://leiyunai.fun", "http://154.219.106.53"}, values)
+}
+
+func TestNormalizeCenterURLList_AddsKnownControlPlaneIPsForDomain(t *testing.T) {
+	values := normalizeCenterURLList("http://leiyunai.fun", nil)
+
+	require.Equal(t, []string{"http://leiyunai.fun", "http://154.219.106.105", "http://154.219.106.53"}, values)
+}
+
 func TestNormalizeDeployOutboundProxyURLs_MultipleLines(t *testing.T) {
 	values := normalizeDeployOutboundProxyURLs("socks5", " socks5://u1:p1@h1:3010 \n\nsocks5://u2:p2@h2:3011\r\n")
 

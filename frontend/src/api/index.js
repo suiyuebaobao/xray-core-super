@@ -63,6 +63,7 @@ export const adminApi = {
     delete: (id) => httpDelete(`/api/admin/nodes/${id}`),
     scanDeployIps: (payload) => httpPost('/api/admin/nodes/deploy/scan-ips', payload),
     deploy: (payload) => httpPost('/api/admin/nodes/deploy', payload),
+    repairCenter: (payload) => httpPost('/api/admin/nodes/repair-center', payload),
   },
   relays: {
     list: () => httpGet('/api/admin/relays', freshParams()),

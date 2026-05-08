@@ -36,19 +36,20 @@ func NewRelayDeployServiceWithAutomation(relayRepo *repository.RelayRepository, 
 
 // RelayDeployRequest 一键部署中转节点请求。
 type RelayDeployRequest struct {
-	SSHHost             string `json:"ssh_host" binding:"required"`
-	SSHPort             int    `json:"ssh_port"`
-	SSHUser             string `json:"ssh_user" binding:"required"`
-	SSHPassword         string `json:"ssh_password" binding:"required"`
-	CenterURL           string `json:"center_url" binding:"required"`
-	RelayToken          string `json:"relay_token"`
-	RelayName           string `json:"relay_name"`
-	ForwarderType       string `json:"forwarder_type"`
-	ExitNodeID          uint64 `json:"exit_node_id"`
-	ListenPort          uint32 `json:"listen_port"`
-	TargetPort          uint32 `json:"target_port"`
-	BackendName         string `json:"backend_name"`
-	ReplaceExistingRole bool   `json:"replace_existing_role"`
+	SSHHost             string   `json:"ssh_host" binding:"required"`
+	SSHPort             int      `json:"ssh_port"`
+	SSHUser             string   `json:"ssh_user" binding:"required"`
+	SSHPassword         string   `json:"ssh_password" binding:"required"`
+	CenterURL           string   `json:"center_url" binding:"required"`
+	CenterURLs          []string `json:"center_urls"`
+	RelayToken          string   `json:"relay_token"`
+	RelayName           string   `json:"relay_name"`
+	ForwarderType       string   `json:"forwarder_type"`
+	ExitNodeID          uint64   `json:"exit_node_id"`
+	ListenPort          uint32   `json:"listen_port"`
+	TargetPort          uint32   `json:"target_port"`
+	BackendName         string   `json:"backend_name"`
+	ReplaceExistingRole bool     `json:"replace_existing_role"`
 }
 
 // RelayDeployResult 中转节点部署结果。
@@ -69,6 +70,16 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 	var sshClient *ssh.Client
 	var createdRelayID uint64
 	containerName := "raypilot-relay-agent"
+	centerURLs := normalizeCenterURLList(req.CenterURL, req.CenterURLs)
+	if len(centerURLs) == 0 {
+		return result, fmt.Errorf("center_url must be a valid http or https URL")
+	}
+	req.CenterURL = centerURLs[0]
+	if len(centerURLs) > 1 {
+		req.CenterURLs = centerURLs[1:]
+	} else {
+		req.CenterURLs = nil
+	}
 
 	addStep := func(name, status, msg string) {
 		log.Printf("[relay-deploy] [%s] %s: %s", name, status, msg)
@@ -170,7 +181,7 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 	addStep("创建记录", "success", fmt.Sprintf("中转节点已创建 (ID: %d)", relay.ID))
 
 	addStep("启动容器", "running", "启动 node-agent relay 模式容器")
-	if err := startRelayContainer(sshClient, req.CenterURL, relay.ID, relayToken); err != nil {
+	if err := startRelayContainer(sshClient, req.CenterURL, req.CenterURLs, relay.ID, relayToken); err != nil {
 		addStep("启动容器", "failed", err.Error())
 		return fail("容器启动失败: %w", err)
 	}
@@ -214,8 +225,9 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 	return result, nil
 }
 
-func startRelayContainer(client *ssh.Client, centerURL string, relayID uint64, relayToken string) error {
+func startRelayContainer(client *ssh.Client, centerURL string, centerURLList []string, relayID uint64, relayToken string) error {
 	containerName := "raypilot-relay-agent"
+	centerURLs := centerURLsEnvValue(centerURL, centerURLList)
 	_, _ = client.Exec(fmt.Sprintf("docker rm -f %s suiyue-relay-agent 2>/dev/null", shellQuote(containerName)))
 	if _, err := client.Exec("mkdir -p /etc/raypilot/haproxy"); err != nil {
 		return fmt.Errorf("prepare haproxy config dir: %w", err)
@@ -226,13 +238,14 @@ func startRelayContainer(client *ssh.Client, centerURL string, relayID uint64, r
 		--restart unless-stopped \
 		-e AGENT_ROLE=relay \
 		-e CENTER_SERVER_URL=%s \
+		-e CENTER_SERVER_URLS=%s \
 		-e RELAY_ID=%d \
 		-e RELAY_TOKEN=%s \
 		-e HAPROXY_CONFIG_PATH=/etc/haproxy/haproxy.cfg \
 		-e HAPROXY_PID_PATH=/tmp/haproxy.pid \
 		-e HAPROXY_STATS_SOCKET_PATH=/tmp/haproxy.sock \
 		-v /etc/raypilot/haproxy:/etc/haproxy:rw \
-		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), relayID, shellQuote(relayToken))
+		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), shellQuote(centerURLs), relayID, shellQuote(relayToken))
 
 	out, err := client.Exec(cmd)
 	if err != nil {

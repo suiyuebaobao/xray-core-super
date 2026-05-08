@@ -2,6 +2,7 @@ import { chromium } from '@playwright/test'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import http from 'node:http'
+import { once } from 'node:events'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -676,6 +677,7 @@ async function startFrontendServer() {
     cwd: frontendRoot,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env },
+    detached: true,
   })
 
   let output = ''
@@ -700,6 +702,31 @@ async function startFrontendServer() {
   }
 
   return child
+}
+
+async function stopFrontendServer(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return
+  }
+
+  try {
+    process.kill(-child.pid, 'SIGTERM')
+  } catch {
+    child.kill('SIGTERM')
+  }
+
+  const timeout = new Promise((resolve) => {
+    setTimeout(resolve, 5_000)
+  })
+  await Promise.race([once(child, 'exit'), timeout])
+
+  if (child.exitCode === null && child.signalCode === null) {
+    try {
+      process.kill(-child.pid, 'SIGKILL')
+    } catch {
+      child.kill('SIGKILL')
+    }
+  }
 }
 
 async function installDemoApi(page, persona = 'user') {
@@ -1053,7 +1080,7 @@ async function main() {
     await context.close()
     await browser.close()
     if (server) {
-      server.kill('SIGTERM')
+      await stopFrontendServer(server)
     }
   }
 }

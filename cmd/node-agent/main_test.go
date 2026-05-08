@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -16,6 +17,63 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
+}
+
+func TestParseCenterServerURLs_DedupesAndNormalizes(t *testing.T) {
+	urls := parseCenterServerURLs(" https://api-a.example.com/ ,http://1.2.3.4:8080/base/ ", "https://api-a.example.com")
+
+	want := []string{"https://api-a.example.com", "http://1.2.3.4:8080/base"}
+	if strings.Join(urls, ",") != strings.Join(want, ",") {
+		t.Fatalf("urls = %#v, want %#v", urls, want)
+	}
+}
+
+func TestParseCenterServerURLs_AddsKnownFallback(t *testing.T) {
+	urls := parseCenterServerURLs("", "http://154.219.106.105")
+
+	want := []string{"http://154.219.106.105", "http://leiyunai.fun", "http://154.219.106.53"}
+	if strings.Join(urls, ",") != strings.Join(want, ",") {
+		t.Fatalf("urls = %#v, want %#v", urls, want)
+	}
+}
+
+func TestParseCenterServerURLs_AddsKnownIPsForDomain(t *testing.T) {
+	urls := parseCenterServerURLs("", "http://leiyunai.fun")
+
+	want := []string{"http://leiyunai.fun", "http://154.219.106.105", "http://154.219.106.53"}
+	if strings.Join(urls, ",") != strings.Join(want, ",") {
+		t.Fatalf("urls = %#v, want %#v", urls, want)
+	}
+}
+
+func TestPostJSON_FallsBackToNextCenterAndRemembersSuccess(t *testing.T) {
+	var requestedHosts []string
+	agent := NewAgent(&Config{
+		CenterServerURLs: []string{"http://center-a.test", "http://center-b.test"},
+	})
+	agent.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requestedHosts = append(requestedHosts, r.URL.Host)
+		if r.URL.Host == "center-a.test" {
+			return nil, errors.New("dial failed")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"success":true}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	var resp map[string]interface{}
+	if err := agent.postJSON(contextWithTimeout(t, time.Second), "/api/agent/heartbeat", map[string]string{"ok": "1"}, &resp); err != nil {
+		t.Fatalf("postJSON returned error: %v", err)
+	}
+
+	if strings.Join(requestedHosts, ",") != "center-a.test,center-b.test" {
+		t.Fatalf("requested hosts = %#v", requestedHosts)
+	}
+	if got := agent.activeCenterServerURL(); got != "http://center-b.test" {
+		t.Fatalf("active center = %s, want center-b", got)
+	}
 }
 
 func TestBuildHAProxyConfig_IncludesStatsSocketAndRelayBackend(t *testing.T) {

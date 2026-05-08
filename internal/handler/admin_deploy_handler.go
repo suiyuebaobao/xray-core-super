@@ -85,6 +85,34 @@ func (h *NodeDeployHandler) ScanIPs(c *gin.Context) {
 	response.Success(c, result)
 }
 
+// RepairCenter 处理 POST /api/admin/nodes/repair-center — SSH 兜底修复 node-agent 中心地址。
+func (h *NodeDeployHandler) RepairCenter(c *gin.Context) {
+	var req service.RepairCenterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.HandleError(c, response.ErrBadRequest)
+		return
+	}
+
+	if req.SSHPort == 0 {
+		req.SSHPort = 22
+	}
+
+	startedAt := time.Now()
+	result, err := h.deploySvc.RepairCenterURLs(c.Request.Context(), &req)
+	h.recordRepairCenterDeploymentLog(c, &req, result, err, time.Since(startedAt))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, response.Response{
+			Success: false,
+			Message: "修复失败: " + err.Error(),
+			Code:    50001,
+			Data:    result,
+		})
+		return
+	}
+
+	response.Success(c, result)
+}
+
 // RelayDeployHandler 中转节点部署处理器。
 type RelayDeployHandler struct {
 	deploySvc        *service.RelayDeployService
@@ -162,6 +190,37 @@ func (h *NodeDeployHandler) recordNodeDeploymentLog(c *gin.Context, req *service
 	_ = h.deploymentLogSvc.Record(c.Request.Context(), ctx, "exit_deploy", req.SSHHost, "exit", resultStatus, sanitizeNodeDeployRequest(req), duration, nodeID, nodeIDs, nodeHostID, nil, nil, steps, detail)
 }
 
+func (h *NodeDeployHandler) recordRepairCenterDeploymentLog(c *gin.Context, req *service.RepairCenterRequest, result *service.RepairCenterResult, err error, duration time.Duration) {
+	if h == nil || h.deploymentLogSvc == nil {
+		return
+	}
+	ctx := buildClientLogContext(c)
+	resultStatus := "success"
+	var detail *string
+	if err != nil {
+		resultStatus = "failed"
+		msg := err.Error()
+		detail = &msg
+	}
+	var nodeID *uint64
+	if req.NodeID != 0 {
+		nodeID = &req.NodeID
+	}
+	var nodeHostID *uint64
+	if req.NodeHostID != 0 {
+		nodeHostID = &req.NodeHostID
+	}
+	var relayID *uint64
+	if req.RelayID != 0 {
+		relayID = &req.RelayID
+	}
+	var steps []service.Step
+	if result != nil {
+		steps = result.Steps
+	}
+	_ = h.deploymentLogSvc.Record(c.Request.Context(), ctx, "agent_center_repair", req.SSHHost, "agent", resultStatus, sanitizeRepairCenterRequest(req), duration, nodeID, nil, nodeHostID, relayID, nil, steps, detail)
+}
+
 func (h *RelayDeployHandler) recordRelayDeploymentLog(c *gin.Context, req *service.RelayDeployRequest, result *service.RelayDeployResult, err error, duration time.Duration) {
 	if h == nil || h.deploymentLogSvc == nil {
 		return
@@ -202,6 +261,7 @@ func sanitizeNodeDeployRequest(req *service.DeployRequest) map[string]interface{
 		"ssh_port":              req.SSHPort,
 		"ssh_user":              req.SSHUser,
 		"center_url":            req.CenterURL,
+		"center_urls":           req.CenterURLs,
 		"target_server_ip":      req.SSHHost,
 		"node_name":             req.NodeName,
 		"traffic_pool":          req.TrafficPool,
@@ -220,6 +280,24 @@ func sanitizeNodeDeployRequest(req *service.DeployRequest) map[string]interface{
 		"node_group_ids":        req.NodeGroupIDs,
 		"replace_existing_role": req.ReplaceExistingRole,
 		"node_token_provided":   req.NodeToken != "",
+	}
+}
+
+func sanitizeRepairCenterRequest(req *service.RepairCenterRequest) map[string]interface{} {
+	if req == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"ssh_host":             req.SSHHost,
+		"ssh_port":             req.SSHPort,
+		"ssh_user":             req.SSHUser,
+		"center_url":           req.CenterURL,
+		"center_urls":          req.CenterURLs,
+		"target_server_ip":     req.SSHHost,
+		"node_id":              req.NodeID,
+		"node_host_id":         req.NodeHostID,
+		"relay_id":             req.RelayID,
+		"wait_timeout_seconds": req.WaitTimeoutSeconds,
 	}
 }
 
@@ -248,6 +326,7 @@ func sanitizeRelayDeployRequest(req *service.RelayDeployRequest, targetHost stri
 		"ssh_port":              req.SSHPort,
 		"ssh_user":              req.SSHUser,
 		"center_url":            req.CenterURL,
+		"center_urls":           req.CenterURLs,
 		"target_server_ip":      req.SSHHost,
 		"relay_entry_ip":        req.SSHHost,
 		"relay_name":            req.RelayName,

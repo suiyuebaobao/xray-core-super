@@ -228,6 +228,7 @@ func main() {
 		adminGroup.DELETE("/nodes/:id", adminNodeHandler.Delete)
 		adminGroup.POST("/nodes/deploy/scan-ips", nodeDeployHandler.ScanIPs)
 		adminGroup.POST("/nodes/deploy", nodeDeployHandler.Deploy)
+		adminGroup.POST("/nodes/repair-center", nodeDeployHandler.RepairCenter)
 
 		// 中转节点管理
 		adminGroup.GET("/relays", adminRelayHandler.List)

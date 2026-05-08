@@ -123,10 +123,11 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="250">
+      <el-table-column label="操作" width="340">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="showServerDialog(row)">编辑服务器</el-button>
           <el-button size="small" @click="showAddResidentialForServer(row)">加家宽</el-button>
+          <el-button size="small" type="warning" @click="showRepairCenterDialog(row)">修复中心</el-button>
           <el-button size="small" type="danger" @click="handleDeleteServer(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -252,7 +253,15 @@
           <el-input v-model="deployForm.node_name" placeholder="可选，默认为 raypilot-node-IP" />
         </el-form-item>
         <el-form-item label="中心服务地址" prop="center_url">
-          <el-input v-model="deployForm.center_url" placeholder="例如：http://156.238.231.216" />
+          <el-input v-model="deployForm.center_url" placeholder="例如：http://leiyunai.fun" />
+        </el-form-item>
+        <el-form-item label="备用中心地址">
+          <el-input
+            v-model="deployForm.center_urls_text"
+            type="textarea"
+            :rows="3"
+            placeholder="每行一个备用 IP 或域名，也可以用逗号分隔"
+          />
         </el-form-item>
         <el-form-item label="节点 Token">
           <el-input v-model="deployForm.node_token" placeholder="留空自动生成" />
@@ -438,6 +447,59 @@
         <el-button @click="serverDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="repairDialogVisible" title="修复节点中心地址" width="680px">
+      <el-form :model="repairForm" :rules="repairRules" ref="repairFormRef" label-width="130px">
+        <el-alert
+          title="兜底修复会通过 SSH 登录节点服务器，重建或重启 node-agent，并写入新的中心地址列表。"
+          type="warning"
+          :closable="false"
+          style="margin-bottom: 16px"
+        />
+        <el-form-item label="服务器 IP" prop="ssh_host">
+          <el-input v-model="repairForm.ssh_host" />
+        </el-form-item>
+        <el-form-item label="SSH 端口" prop="ssh_port">
+          <el-input-number v-model="repairForm.ssh_port" :min="1" :max="65535" />
+        </el-form-item>
+        <el-form-item label="SSH 用户" prop="ssh_user">
+          <el-input v-model="repairForm.ssh_user" />
+        </el-form-item>
+        <el-form-item label="SSH 密码" prop="ssh_password">
+          <el-input v-model="repairForm.ssh_password" type="password" show-password />
+        </el-form-item>
+        <el-form-item label="主中心地址" prop="center_url">
+          <el-input v-model="repairForm.center_url" placeholder="例如：http://leiyunai.fun" />
+        </el-form-item>
+        <el-form-item label="备用中心地址">
+          <el-input
+            v-model="repairForm.center_urls_text"
+            type="textarea"
+            :rows="4"
+            placeholder="每行一个备用 IP 或域名，也可以用逗号分隔"
+          />
+        </el-form-item>
+        <el-form-item label="等待心跳">
+          <el-input-number v-model="repairForm.wait_timeout_seconds" :min="0" :max="300" />
+          <span class="scan-hint">秒，填 0 表示只修配置不等待</span>
+        </el-form-item>
+      </el-form>
+      <div v-if="repairSteps.length" class="deploy-steps">
+        <div v-for="(step, index) in repairSteps" :key="index" class="deploy-step">
+          <el-icon :class="step.status">
+            <CircleCheck v-if="step.status === 'success'" />
+            <CircleClose v-else-if="step.status === 'failed'" />
+            <Loading v-else />
+          </el-icon>
+          <span>{{ step.name }}</span>
+          <span class="step-msg">{{ step.message }}</span>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="repairDialogVisible = false" :disabled="repairingCenter">取消</el-button>
+        <el-button type="warning" @click="handleRepairCenter" :loading="repairingCenter">开始修复</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -460,6 +522,10 @@ const selectedServers = ref([])
 const batchDeleting = ref(false)
 const serverDialogVisible = ref(false)
 const activeServerKey = ref('')
+const repairDialogVisible = ref(false)
+const repairFormRef = ref(null)
+const repairingCenter = ref(false)
+const repairSteps = ref([])
 
 const form = reactive({
   name: '',
@@ -524,6 +590,7 @@ const deployForm = reactive({
   outbound_ip: '',
   outbound_proxy_url: '',
   center_url: window.location.origin,
+  center_urls_text: defaultBackupCenterURLsText(),
   node_token: '',
   transports: ['tcp'],
   tcp_port: 443,
@@ -551,10 +618,31 @@ const deployRules = {
   center_url: [{ required: true, message: '请输入中心服务地址', trigger: 'blur' }],
 }
 
+const repairForm = reactive({
+  ssh_host: '',
+  ssh_port: 22,
+  ssh_user: 'root',
+  ssh_password: '',
+  center_url: window.location.origin,
+  center_urls_text: defaultBackupCenterURLsText(),
+  node_id: 0,
+  node_host_id: 0,
+  wait_timeout_seconds: 45,
+})
+
+const repairRules = {
+  ssh_host: [{ required: true, message: '请输入服务器 IP', trigger: 'blur' }],
+  ssh_user: [{ required: true, message: '请输入 SSH 用户', trigger: 'blur' }],
+  ssh_password: [{ required: true, message: '请输入 SSH 密码', trigger: 'blur' }],
+  center_url: [{ required: true, message: '请输入主中心地址', trigger: 'blur' }],
+}
+
 function showDeployDialog() {
   deploySteps.value = []
   scannedIps.value = []
   selectedDeployIps.value = []
+  deployForm.center_url = currentCenterURL()
+  deployForm.center_urls_text = defaultBackupCenterURLsText()
   handleTransportSelectionChange(deployForm)
   deployDialogVisible.value = true
   fetchNodeGroups()
@@ -638,6 +726,7 @@ async function handleDeploy() {
       outbound_ip: deployForm.outbound_ip,
       outbound_proxy_url: deployForm.outbound_proxy_url,
       center_url: deployForm.center_url,
+      center_urls: parseCenterURLsText(deployForm.center_urls_text),
       node_token: deployForm.node_token,
       transports,
       transport: transports[0],
@@ -1038,6 +1127,84 @@ function clearServerSelection() {
 function showServerDialog(row) {
   activeServerKey.value = row.key
   serverDialogVisible.value = true
+}
+
+function showRepairCenterDialog(row) {
+  const first = row.nodes?.[0] || {}
+  repairSteps.value = []
+  repairForm.ssh_host = row.management_ip || first.host || ''
+  repairForm.ssh_port = 22
+  repairForm.ssh_user = 'root'
+  repairForm.ssh_password = ''
+  repairForm.center_url = currentCenterURL()
+  repairForm.center_urls_text = defaultBackupCenterURLsText()
+  repairForm.node_id = row.node_host_id ? 0 : (first.id || 0)
+  repairForm.node_host_id = row.node_host_id || 0
+  repairForm.wait_timeout_seconds = 45
+  repairDialogVisible.value = true
+}
+
+function parseCenterURLsText(text) {
+  return uniqueValues(String(text || '').split(/[\s,]+/))
+}
+
+function currentCenterURL() {
+  return window.location.origin
+}
+
+function defaultBackupCenterURLsText() {
+  const current = currentCenterURL()
+  try {
+    const url = new URL(current)
+    return defaultCenterFallbacks(url)
+  } catch {
+    return ''
+  }
+}
+
+function defaultCenterFallbacks(currentURL) {
+  const fallbackHostsByCurrent = {
+    'leiyunai.fun': ['154.219.106.105', '154.219.106.53'],
+    '154.219.106.105': ['leiyunai.fun', '154.219.106.53'],
+    '154.219.106.53': ['leiyunai.fun', '154.219.106.105'],
+  }
+  const fallbackHosts = fallbackHostsByCurrent[currentURL.hostname] || []
+  return fallbackHosts.map((host) => {
+    const copy = new URL(currentURL.toString())
+    copy.hostname = host
+    return copy.toString().replace(/\/$/, '')
+  }).join('\n')
+}
+
+async function handleRepairCenter() {
+  const valid = await repairFormRef.value.validate().catch(() => false)
+  if (!valid) return
+
+  repairingCenter.value = true
+  repairSteps.value = []
+  try {
+    const payload = {
+      ssh_host: repairForm.ssh_host,
+      ssh_port: repairForm.ssh_port,
+      ssh_user: repairForm.ssh_user,
+      ssh_password: repairForm.ssh_password,
+      center_url: repairForm.center_url,
+      center_urls: parseCenterURLsText(repairForm.center_urls_text),
+      node_id: repairForm.node_id,
+      node_host_id: repairForm.node_host_id,
+      wait_timeout_seconds: repairForm.wait_timeout_seconds,
+    }
+    const res = await adminApi.nodes.repairCenter(payload)
+    repairSteps.value = res.data.steps || []
+    ElMessage.success('中心地址修复成功')
+    repairDialogVisible.value = false
+    await fetchNodes()
+  } catch (err) {
+    repairSteps.value = err?.data?.steps || repairSteps.value
+    ElMessage.error(err.message || '中心地址修复失败')
+  } finally {
+    repairingCenter.value = false
+  }
 }
 
 async function handleDeleteServer(row) {

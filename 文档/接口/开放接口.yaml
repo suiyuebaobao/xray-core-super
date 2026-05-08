@@ -256,16 +256,25 @@ paths:
   /api/admin/nodes/deploy:
     post:
       summary: 一键部署出口节点
-      description: 默认单 IP 部署；支持 transport=tcp 或 xhttp，XHTTP 可配置 xhttp_path、xhttp_host、xhttp_mode。multi_ip_enabled=true 时，按管理员确认的 selected_ips 创建 node_hosts 和多条逻辑出口 nodes，并只启动一个 multi_exit node-agent。部署前会清理旧 systemd node-agent、旧出口/中转 agent 容器和冲突的宿主机 Xray 进程。部署成功后可按 node_group_ids 自动绑定分组并触发已有用户同步；replace_existing_role=true 时会自动停用同服务器旧出口/中转记录。
+      description: 默认单 IP 部署；支持 transport=tcp 或 xhttp，XHTTP 可配置 xhttp_path、xhttp_host、xhttp_mode。multi_ip_enabled=true 时，按管理员确认的 selected_ips 创建 node_hosts 和多条逻辑出口 nodes，并只启动一个 multi_exit node-agent。部署前会清理旧 systemd node-agent、旧出口/中转 agent 容器和冲突的宿主机 Xray 进程。部署成功后可按 node_group_ids 自动绑定分组并触发已有用户同步；replace_existing_role=true 时会自动停用同服务器旧出口/中转记录。请求支持 center_urls 备用中心地址，服务端会写入 CENTER_SERVER_URLS；当前 leiyunai.fun、154.219.106.105 与 154.219.106.53 会自动互为备用。
       security:
         - bearerAuth: []
       responses:
         "200":
           description: 单 IP 返回 node_id；多 IP 返回 node_host_id、node_ids 和本次可见的 node_host_token
+  /api/admin/nodes/repair-center:
+    post:
+      summary: SSH 兜底修复 agent 中心地址
+      description: 通过 SSH 登录出口或中转服务器，重建 Docker agent 或更新 systemd drop-in，写入 CENTER_SERVER_URL 与 CENTER_SERVER_URLS。可传 node_id、node_host_id 或 relay_id 等待新心跳；部署日志类型为 agent_center_repair，不能记录 SSH 密码、完整 Token 或私钥。
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 返回修复后的中心地址列表和步骤明细
   /api/admin/relays/deploy:
     post:
       summary: 一键部署中转节点
-      description: 通过 SSH 部署 node-agent relay 模式和 HAProxy，创建 relays 记录并等待心跳回连。若请求包含 exit_node_id 和 listen_port，部署成功后会自动创建 relay_backends、写入 RELOAD_CONFIG 并等待 HAProxy reload 完成；replace_existing_role=true 时会自动停用同服务器旧出口记录。
+      description: 通过 SSH 部署 node-agent relay 模式和 HAProxy，创建 relays 记录并等待心跳回连。若请求包含 exit_node_id 和 listen_port，部署成功后会自动创建 relay_backends、写入 RELOAD_CONFIG 并等待 HAProxy reload 完成；replace_existing_role=true 时会自动停用同服务器旧出口记录。请求支持 center_urls 备用中心地址，服务端会写入 CENTER_SERVER_URLS；当前 leiyunai.fun、154.219.106.105 与 154.219.106.53 会自动互为备用。
       security:
         - bearerAuth: []
       responses:

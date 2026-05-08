@@ -11,11 +11,13 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -69,6 +71,7 @@ type DeployRequest struct {
 	SSHUser             string   `json:"ssh_user" binding:"required"`
 	SSHPassword         string   `json:"ssh_password" binding:"required"`
 	CenterURL           string   `json:"center_url" binding:"required"`
+	CenterURLs          []string `json:"center_urls"`
 	NodeToken           string   `json:"node_token"`
 	NodeName            string   `json:"node_name"`
 	TrafficPool         string   `json:"traffic_pool"`
@@ -98,6 +101,109 @@ func normalizeDeployOutboundRequest(req *DeployRequest) error {
 	return nil
 }
 
+func normalizeDeployCenterRequest(req *DeployRequest) error {
+	centerURLs := normalizeCenterURLList(req.CenterURL, req.CenterURLs)
+	if len(centerURLs) == 0 {
+		return fmt.Errorf("center_url must be a valid http or https URL")
+	}
+	req.CenterURL = centerURLs[0]
+	if len(centerURLs) > 1 {
+		req.CenterURLs = centerURLs[1:]
+	} else {
+		req.CenterURLs = nil
+	}
+	return nil
+}
+
+func normalizeCenterURLList(primary string, values []string) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(values)+1)
+	add := func(raw string) {
+		for _, item := range strings.FieldsFunc(raw, func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+		}) {
+			item = normalizeCenterURL(item)
+			if item == "" {
+				continue
+			}
+			if _, ok := seen[item]; ok {
+				continue
+			}
+			seen[item] = struct{}{}
+			result = append(result, item)
+		}
+	}
+	add(primary)
+	for _, value := range values {
+		add(value)
+	}
+	for _, value := range append([]string(nil), result...) {
+		for _, fallback := range knownCenterFallbackURLs(value) {
+			add(fallback)
+		}
+	}
+	return result
+}
+
+func normalizeCenterURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return ""
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func knownCenterFallbackURLs(raw string) []string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil
+	}
+	var hostnames []string
+	switch strings.ToLower(parsed.Hostname()) {
+	case "leiyunai.fun":
+		hostnames = []string{"154.219.106.105", "154.219.106.53"}
+	case "154.219.106.105":
+		hostnames = []string{"leiyunai.fun", "154.219.106.53"}
+	case "154.219.106.53":
+		hostnames = []string{"leiyunai.fun", "154.219.106.105"}
+	default:
+		return nil
+	}
+	result := make([]string, 0, len(hostnames))
+	for _, hostname := range hostnames {
+		clone := *parsed
+		clone.Host = replaceURLHostname(&clone, hostname)
+		if normalized := normalizeCenterURL(clone.String()); normalized != "" {
+			result = append(result, normalized)
+		}
+	}
+	return result
+}
+
+func replaceURLHostname(parsed *url.URL, hostname string) string {
+	if port := parsed.Port(); port != "" {
+		return net.JoinHostPort(hostname, port)
+	}
+	return hostname
+}
+
+func centerURLsEnvValue(primary string, values []string) string {
+	urls := normalizeCenterURLList(primary, values)
+	return strings.Join(urls, ",")
+}
+
 // DeployResult 部署结果。
 type DeployResult struct {
 	NodeID        uint64   `json:"node_id,omitempty"`
@@ -108,6 +214,28 @@ type DeployResult struct {
 	Success       bool     `json:"success"`
 	Message       string   `json:"message"`
 	Steps         []Step   `json:"steps"`
+}
+
+// RepairCenterRequest 通过 SSH 兜底修复 node-agent 中心地址请求。
+type RepairCenterRequest struct {
+	SSHHost            string   `json:"ssh_host" binding:"required"`
+	SSHPort            int      `json:"ssh_port"`
+	SSHUser            string   `json:"ssh_user" binding:"required"`
+	SSHPassword        string   `json:"ssh_password" binding:"required"`
+	CenterURL          string   `json:"center_url"`
+	CenterURLs         []string `json:"center_urls"`
+	NodeID             uint64   `json:"node_id"`
+	NodeHostID         uint64   `json:"node_host_id"`
+	RelayID            uint64   `json:"relay_id"`
+	WaitTimeoutSeconds int      `json:"wait_timeout_seconds"`
+}
+
+// RepairCenterResult 兜底修复结果。
+type RepairCenterResult struct {
+	Success    bool     `json:"success"`
+	Message    string   `json:"message"`
+	CenterURLs []string `json:"center_urls"`
+	Steps      []Step   `json:"steps"`
 }
 
 // Step 部署步骤。
@@ -342,6 +470,9 @@ func normalizeXHTTPMode(mode string) string {
 
 // Deploy 一键部署节点。
 func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*DeployResult, error) {
+	if err := normalizeDeployCenterRequest(req); err != nil {
+		return &DeployResult{Steps: []Step{}}, err
+	}
 	if err := normalizeDeployOutboundRequest(req); err != nil {
 		return &DeployResult{Steps: []Step{}}, err
 	}
@@ -485,7 +616,7 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 
 	// Step 6: 启动容器（传入节点 ID）
 	addStep("启动容器", "running", "启动 node-agent 容器")
-	if err := s.startContainer(sshClient, req.CenterURL, node, nodeToken); err != nil {
+	if err := s.startContainer(sshClient, req.CenterURL, req.CenterURLs, node, nodeToken); err != nil {
 		addStep("启动容器", "failed", err.Error())
 		return fail("容器启动失败: %w", err)
 	}
@@ -771,7 +902,7 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 	}
 
 	addStep("启动容器", "running", "启动 multi_exit node-agent 容器")
-	if err := s.startMultiExitContainer(sshClient, req.CenterURL, nodeHost.ID, hostToken, nodeConfigs); err != nil {
+	if err := s.startMultiExitContainer(sshClient, req.CenterURL, req.CenterURLs, nodeHost.ID, hostToken, nodeConfigs); err != nil {
 		addStep("启动容器", "failed", err.Error())
 		return fail("容器启动失败: %w", err)
 	}
@@ -945,6 +1076,260 @@ func uniqueDeployUint64s(values []uint64) []uint64 {
 	return normalized
 }
 
+// RepairCenterURLs 通过 SSH 修复已部署 node-agent 的中心地址。
+func (s *NodeDeployService) RepairCenterURLs(ctx context.Context, req *RepairCenterRequest) (*RepairCenterResult, error) {
+	result := &RepairCenterResult{Steps: []Step{}}
+	addStep := func(name, status, msg string) {
+		log.Printf("[repair-center] [%s] %s: %s", name, status, msg)
+		result.Steps = append(result.Steps, Step{Name: name, Status: status, Message: msg})
+	}
+
+	centerURLs := normalizeCenterURLList(req.CenterURL, req.CenterURLs)
+	if len(centerURLs) == 0 {
+		err := fmt.Errorf("至少需要一个中心地址")
+		addStep("校验中心地址", "failed", err.Error())
+		return result, err
+	}
+	result.CenterURLs = centerURLs
+	centerURL := centerURLs[0]
+	centerURLsValue := strings.Join(centerURLs, ",")
+	addStep("校验中心地址", "success", fmt.Sprintf("共 %d 个中心入口", len(centerURLs)))
+
+	sshClient := ssh.New(ssh.Config{
+		Host:     req.SSHHost,
+		Port:     req.SSHPort,
+		User:     req.SSHUser,
+		Password: req.SSHPassword,
+	})
+	addStep("SSH 连接", "running", fmt.Sprintf("连接到 %s@%s:%d", req.SSHUser, req.SSHHost, req.SSHPort))
+	if err := sshClient.Connect(); err != nil {
+		addStep("SSH 连接", "failed", err.Error())
+		return result, fmt.Errorf("SSH 连接失败: %w", err)
+	}
+	defer sshClient.Close()
+	addStep("SSH 连接", "success", "连接成功")
+
+	addStep("修复 Docker agent", "running", "检查并重建 node-agent 容器中心地址")
+	dockerOut, dockerErr := repairDockerAgentCenterURLs(sshClient, centerURL, centerURLsValue, repairDockerContainerCandidates(req))
+	dockerRepaired := dockerErr == nil
+	if dockerErr == nil {
+		addStep("修复 Docker agent", "success", strings.TrimSpace(dockerOut))
+	} else if isRepairAgentNotFound(dockerOut, dockerErr) {
+		addStep("修复 Docker agent", "success", "未找到 Docker node-agent 容器，已跳过")
+	} else {
+		addStep("修复 Docker agent", "failed", dockerErr.Error())
+	}
+
+	addStep("修复 systemd agent", "running", "检查并更新 systemd node-agent 中心地址")
+	systemdOut, systemdErr := repairSystemdAgentCenterURLs(sshClient, centerURL, centerURLsValue)
+	systemdRepaired := systemdErr == nil
+	if systemdErr == nil {
+		addStep("修复 systemd agent", "success", strings.TrimSpace(systemdOut))
+	} else if isRepairAgentNotFound(systemdOut, systemdErr) {
+		addStep("修复 systemd agent", "success", "未找到 systemd node-agent 服务，已跳过")
+	} else {
+		addStep("修复 systemd agent", "failed", systemdErr.Error())
+	}
+
+	if !dockerRepaired && !systemdRepaired {
+		err := fmt.Errorf("未找到可修复的 node-agent: docker=%v systemd=%v", dockerErr, systemdErr)
+		addStep("修复结果", "failed", err.Error())
+		return result, err
+	}
+
+	if err := s.waitRepairHeartbeat(ctx, req, addStep); err != nil {
+		result.Message = "中心地址已写入，但等待心跳失败: " + err.Error()
+		addStep("等待心跳", "failed", err.Error())
+		return result, err
+	}
+
+	result.Success = true
+	result.Message = "中心地址修复成功"
+	addStep("修复结果", "success", result.Message)
+	return result, nil
+}
+
+func repairDockerContainerCandidates(req *RepairCenterRequest) []string {
+	if req != nil && req.RelayID > 0 {
+		return []string{"raypilot-relay-agent", "suiyue-relay-agent", "raypilot-node-agent", "suiyue-node-agent"}
+	}
+	return []string{"raypilot-node-agent", "suiyue-node-agent", "raypilot-relay-agent", "suiyue-relay-agent"}
+}
+
+func isRepairAgentNotFound(output string, err error) bool {
+	if err == nil {
+		return false
+	}
+	text := output + " " + err.Error()
+	return strings.Contains(text, "no docker node-agent container found") ||
+		strings.Contains(text, "no systemd node-agent service found")
+}
+
+func repairDockerAgentCenterURLs(client *ssh.Client, centerURL string, centerURLs string, containerNames []string) (string, error) {
+	if len(containerNames) == 0 {
+		containerNames = repairDockerContainerCandidates(nil)
+	}
+	envContent := fmt.Sprintf("CENTER_SERVER_URL=%s\nCENTER_SERVER_URLS=%s\n", centerURL, centerURLs)
+	envB64 := base64.StdEncoding.EncodeToString([]byte(envContent))
+	cmd := fmt.Sprintf(`set -e
+name=""
+for n in %s; do
+	if docker ps -a --format '{{.Names}}' | grep -Fx "$n" >/dev/null 2>&1; then
+		name="$n"
+		break
+	fi
+done
+if [ -z "$name" ]; then
+	echo "no docker node-agent container found"
+	exit 21
+fi
+image="$(docker inspect "$name" --format '{{.Config.Image}}')"
+network_mode="$(docker inspect "$name" --format '{{.HostConfig.NetworkMode}}')"
+restart_name="$(docker inspect "$name" --format '{{.HostConfig.RestartPolicy.Name}}')"
+was_running="0"
+if docker ps --format '{{.Names}}' | grep -Fx "$name" >/dev/null 2>&1; then
+	was_running="1"
+fi
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+env_file="$tmp_dir/env.list"
+{
+	printf '%%s' %s | base64 -d
+	docker inspect "$name" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Ev '^(CENTER_SERVER_URL|CENTER_SERVER_URLS)=' || true
+} > "$env_file"
+old_name="${name}-repair-old-$(date +%%s)"
+docker rename "$name" "$old_name"
+restore_old() {
+	if [ "${repair_success:-0}" = "1" ]; then
+		docker rm -f "$old_name" >/dev/null 2>&1 || true
+		return
+	fi
+	docker rm -f "$name" >/dev/null 2>&1 || true
+	if docker ps -a --format '{{.Names}}' | grep -Fx "$old_name" >/dev/null 2>&1; then
+		docker rename "$old_name" "$name" >/dev/null 2>&1 || true
+		if [ "$was_running" = "1" ]; then
+			docker start "$name" >/dev/null 2>&1 || true
+		fi
+	fi
+}
+trap 'rm -rf "$tmp_dir"; restore_old' EXIT
+if [ "$was_running" = "1" ]; then
+	docker stop "$old_name" >/dev/null
+fi
+restart_arg=""
+if [ -n "$restart_name" ] && [ "$restart_name" != "no" ]; then
+	restart_arg="--restart $restart_name"
+fi
+network_arg=""
+if [ "$network_mode" = "host" ]; then
+	network_arg="--network host"
+fi
+if ! docker run -d --name "$name" $network_arg $restart_arg --env-file "$env_file" --volumes-from "$old_name" "$image" >/dev/null; then
+	echo "failed to recreate $name; restored old container"
+	exit 23
+fi
+sleep 3
+status="$(docker ps --filter name="$name" --format '{{.Status}}')"
+if [ -z "$status" ]; then
+	echo "container $name not running"
+	exit 22
+fi
+repair_success=1
+docker rm -f "$old_name" >/dev/null
+echo "recreated $name with CENTER_SERVER_URLS=%s"`, strings.Join(containerNames, " "), envB64, centerURLs)
+	return client.Exec(cmd)
+}
+
+func repairSystemdAgentCenterURLs(client *ssh.Client, centerURL string, centerURLs string) (string, error) {
+	cmd := fmt.Sprintf(`set -e
+service=""
+for s in node-agent.service raypilot-node-agent.service raypilot-relay-agent.service suiyue-node-agent.service suiyue-relay-agent.service; do
+	if systemctl list-unit-files "$s" --no-legend 2>/dev/null | grep -q "$s"; then
+		service="$s"
+		break
+	fi
+done
+if [ -z "$service" ]; then
+	echo "no systemd node-agent service found"
+	exit 31
+fi
+mkdir -p "/etc/systemd/system/$service.d"
+cat > "/etc/systemd/system/$service.d/20-center-urls.conf" <<EOF
+[Service]
+Environment="CENTER_SERVER_URL=%s"
+Environment="CENTER_SERVER_URLS=%s"
+EOF
+systemctl daemon-reload
+systemctl restart "$service"
+sleep 3
+systemctl is-active --quiet "$service"
+echo "restarted $service with CENTER_SERVER_URLS=%s"`, centerURL, centerURLs, centerURLs)
+	return client.Exec(cmd)
+}
+
+func (s *NodeDeployService) waitRepairHeartbeat(ctx context.Context, req *RepairCenterRequest, addStep func(string, string, string)) error {
+	if req.WaitTimeoutSeconds == 0 {
+		addStep("等待心跳", "success", "已按请求跳过心跳确认")
+		return nil
+	}
+	timeout := time.Duration(req.WaitTimeoutSeconds) * time.Second
+	if timeout < 0 {
+		timeout = 30 * time.Second
+	}
+	if req.NodeID == 0 && req.NodeHostID == 0 && req.RelayID == 0 {
+		addStep("等待心跳", "success", "未指定节点记录 ID，跳过心跳确认")
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	baseline := time.Now().Add(-2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ok, err := s.repairHeartbeatAfter(ctx, req, baseline)
+		if err == nil && ok {
+			addStep("等待心跳", "success", "新中心已收到 agent 心跳")
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("timeout waiting agent heartbeat")
+}
+
+func (s *NodeDeployService) repairHeartbeatAfter(ctx context.Context, req *RepairCenterRequest, after time.Time) (bool, error) {
+	if req.NodeID > 0 {
+		if s.nodeRepo == nil {
+			return false, nil
+		}
+		node, err := s.nodeRepo.FindByID(ctx, req.NodeID)
+		if err != nil {
+			return false, err
+		}
+		return node.LastHeartbeatAt != nil && node.LastHeartbeatAt.After(after), nil
+	}
+	if req.NodeHostID > 0 {
+		if s.nodeHostRepo == nil {
+			return false, nil
+		}
+		host, err := s.nodeHostRepo.FindByID(ctx, req.NodeHostID)
+		if err != nil {
+			return false, err
+		}
+		return host.LastHeartbeatAt != nil && host.LastHeartbeatAt.After(after), nil
+	}
+	if req.RelayID > 0 {
+		if s.relayRepo == nil {
+			return false, nil
+		}
+		relay, err := s.relayRepo.FindByID(ctx, req.RelayID)
+		if err != nil {
+			return false, err
+		}
+		return relay.LastHeartbeatAt != nil && relay.LastHeartbeatAt.After(after), nil
+	}
+	return true, nil
+}
+
 func (s *NodeDeployService) checkDocker(client *ssh.Client) (bool, error) {
 	out, err := client.Exec("docker --version")
 	return err == nil && strings.Contains(out, "Docker"), nil
@@ -1031,8 +1416,9 @@ func (s *NodeDeployService) cleanupLegacyNodeAgent(client *ssh.Client) error {
 	return nil
 }
 
-func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string, node *model.Node, nodeToken string) error {
+func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string, centerURLList []string, node *model.Node, nodeToken string) error {
 	containerName := "raypilot-node-agent"
+	centerURLs := centerURLsEnvValue(centerURL, centerURLList)
 
 	// 先停止并删除同名容器和旧品牌容器（如果存在）
 	client.Exec(fmt.Sprintf("docker rm -f %s suiyue-node-agent 2>/dev/null", containerName))
@@ -1041,6 +1427,7 @@ func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string,
 		--network host \
 		--restart unless-stopped \
 		-e CENTER_SERVER_URL=%s \
+		-e CENTER_SERVER_URLS=%s \
 		-e NODE_ID=%d \
 		-e NODE_TOKEN=%s \
 		-e NODE_TRANSPORT=%s \
@@ -1054,7 +1441,7 @@ func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string,
 		-e XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json \
 		-e XRAY_API_SERVER=127.0.0.1:10085 \
 		-v /usr/local/etc/xray:/usr/local/etc/xray:rw \
-		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), node.ID, shellQuote(nodeToken), shellQuote(node.Transport), shellQuote(node.OutboundType), shellQuote(node.OutboundIP), shellQuote(derefString(node.OutboundProxyURL)), shellQuote(node.XHTTPPath), shellQuote(node.XHTTPHost), shellQuote(node.XHTTPMode))
+		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), shellQuote(centerURLs), node.ID, shellQuote(nodeToken), shellQuote(node.Transport), shellQuote(node.OutboundType), shellQuote(node.OutboundIP), shellQuote(derefString(node.OutboundProxyURL)), shellQuote(node.XHTTPPath), shellQuote(node.XHTTPHost), shellQuote(node.XHTTPMode))
 
 	out, err := client.Exec(cmd)
 	if err != nil {
@@ -1074,8 +1461,9 @@ func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string,
 	return nil
 }
 
-func (s *NodeDeployService) startMultiExitContainer(client *ssh.Client, centerURL string, nodeHostID uint64, nodeHostToken string, nodes []MultiExitNodeConfig) error {
+func (s *NodeDeployService) startMultiExitContainer(client *ssh.Client, centerURL string, centerURLList []string, nodeHostID uint64, nodeHostToken string, nodes []MultiExitNodeConfig) error {
 	containerName := "raypilot-node-agent"
+	centerURLs := centerURLsEnvValue(centerURL, centerURLList)
 	configData, err := json.Marshal(nodes)
 	if err != nil {
 		return fmt.Errorf("marshal multi node config: %w", err)
@@ -1088,6 +1476,7 @@ func (s *NodeDeployService) startMultiExitContainer(client *ssh.Client, centerUR
 		--restart unless-stopped \
 		-e AGENT_ROLE=multi_exit \
 		-e CENTER_SERVER_URL=%s \
+		-e CENTER_SERVER_URLS=%s \
 		-e NODE_HOST_ID=%d \
 		-e NODE_HOST_TOKEN=%s \
 		-e MULTI_NODE_CONFIG=%s \
@@ -1095,7 +1484,7 @@ func (s *NodeDeployService) startMultiExitContainer(client *ssh.Client, centerUR
 		-e XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json \
 		-e XRAY_API_SERVER=127.0.0.1:10085 \
 		-v /usr/local/etc/xray:/usr/local/etc/xray:rw \
-		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), nodeHostID, shellQuote(nodeHostToken), shellQuote(string(configData)))
+		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), shellQuote(centerURLs), nodeHostID, shellQuote(nodeHostToken), shellQuote(string(configData)))
 
 	out, err := client.Exec(cmd)
 	if err != nil {

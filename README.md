@@ -9,9 +9,9 @@
 
 RayPilot is a self-hosted control panel for Xray-core proxy and VPN-like services. It provides a Go API, Vue admin console, user portal, subscription delivery, exit-node agent, relay-node management, traffic accounting, database migrations, and Docker/systemd deployment assets.
 
-中文关键词：Xray 面板、VLESS Reality 面板、VPN 面板、代理面板、梯子面板、机场面板、订阅面板、Clash 订阅、mihomo 订阅、Shadowrocket 订阅、中转节点、流量统计、一键部署节点。
+中文关键词：Xray 面板、VLESS Reality 面板、VPN 面板、VPN 系统、VPN 管理面板、VPN 订阅面板、自建 VPN、代理面板、代理订阅系统、梯子面板、机场面板、订阅面板、Clash 订阅、mihomo 订阅、Shadowrocket 订阅、中转节点、流量统计、一键部署节点。
 
-English keywords: xray panel, xray-core panel, vless reality panel, vpn panel, proxy panel, subscription panel, clash subscription, mihomo subscription, shadowrocket subscription, relay node, traffic accounting, node-agent, self-hosted proxy.
+English keywords: xray panel, xray-core panel, vless reality panel, vpn panel, vpn management panel, vpn subscription panel, self-hosted vpn, proxy panel, proxy subscription system, subscription panel, clash subscription, mihomo subscription, shadowrocket subscription, relay node, traffic accounting, node-agent, self-hosted proxy.
 
 ![RayPilot admin dashboard](assets/screenshots/admin-dashboard.png)
 
@@ -171,8 +171,13 @@ xray-core
 vless
 reality
 vpn
+vpn-panel
+vpn-management
+vpn-subscription
+self-hosted-vpn
 proxy
 proxy-panel
+proxy-subscription
 subscription
 subscription-panel
 clash

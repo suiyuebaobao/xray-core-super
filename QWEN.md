@@ -200,7 +200,9 @@ suiyue/
 
 已有多台真实节点服务器用于联调测试。三份规则文件必须同步维护本节；SSH 密码、节点 Token、订阅 Token、JWT、数据库连接串和 Reality 私钥不得提交到 GitHub，公开仓库只保留 `[REDACTED]`。
 
-**节点 1**
+`154.219.106.105` 与 `154.219.106.53` 当前作为 RayPilot 管理系统入口和备用入口使用，不再作为测试节点服务器；不得对这台管理系统服务器执行节点清理、node-agent 部署或 Xray 改动，除非用户明确要求维护管理系统本身。
+
+**中转节点：154.219.97.219**
 
 | 项目 | 值 |
 |------|-----|
@@ -220,26 +222,7 @@ suiyue/
 | 中心服务地址 | `[REDACTED]` |
 | Relay Token | `[REDACTED]` |
 
-**节点 2**
-
-| 项目 | 值 |
-|------|-----|
-| 节点 IP | `154.219.106.105` |
-| 出口 IP | `154.219.106.105`, `154.219.106.53` |
-| SSH 用户 | `root` |
-| SSH 密码 | `[REDACTED]` |
-| xray-core | v26.3.27（已安装） |
-| xray 配置 | `/usr/local/etc/xray/config.json` |
-| 协议 | VLESS + Reality + TCP，端口 443，每个出口 IP 独立 inbound/outbound |
-| Reality SNI | `www.microsoft.com` |
-| Reality PublicKey | `zCFojnBF8PNYGYWgHWTynGvPVgp-14G9ttU9rxLD7HE` |
-| node-agent | `raypilot-node-agent` Docker 容器，`AGENT_ROLE=multi_exit` |
-| 逻辑节点 | 当前联调记录为 `33 -> 154.219.106.105`、`34 -> 154.219.106.53` |
-| 旧代理 | systemd `node-agent` 与旧 relay agent 已清理 |
-| 中心服务地址 | `[REDACTED]` |
-| NodeHost Token | `[REDACTED]` |
-
-**节点 3**
+**出口节点：156.238.231.16**
 
 | 项目 | 值 |
 |------|-----|

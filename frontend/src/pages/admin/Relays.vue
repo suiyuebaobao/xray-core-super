@@ -114,7 +114,13 @@
         <el-table-column label="出口节点" min-width="180">
           <template #default="{ row }">
             <el-select v-model="row.exit_node_id" filterable placeholder="选择出口节点" style="width: 100%" @change="handleExitNodeChange(row)">
-              <el-option v-for="node in allNodes" :key="node.id" :label="formatNodeOption(node)" :value="node.id" />
+              <el-option
+                v-for="node in selectableNodesForBackend(row)"
+                :key="node.id"
+                :label="formatNodeOption(node)"
+                :value="node.id"
+                :disabled="!node.is_enabled"
+              />
             </el-select>
           </template>
         </el-table-column>
@@ -412,7 +418,8 @@ function formatNodeAddress(row) {
 
 function formatNodeOption(row) {
   const address = formatNodeAddress(row)
-  return row.name ? `${row.name} / ${address}` : address
+  const name = row.name ? `${row.name} / ${address}` : address
+  return row.is_enabled ? name : `${name}（已停用）`
 }
 
 function formatBackend(backend) {
@@ -423,6 +430,13 @@ function normalizeNodes(data) {
   if (Array.isArray(data?.nodes)) return data.nodes
   if (Array.isArray(data)) return data
   return []
+}
+
+function selectableNodesForBackend(row) {
+  const enabledNodes = allNodes.value.filter((node) => node.is_enabled)
+  const selectedNode = allNodes.value.find((node) => String(node.id) === String(row.exit_node_id))
+  if (selectedNode && !selectedNode.is_enabled) return [selectedNode, ...enabledNodes]
+  return enabledNodes
 }
 
 function normalizeBackends(data) {
@@ -628,6 +642,9 @@ function validateBackendRows() {
   const ports = new Set()
   for (const row of backendRows.value) {
     if (!row.exit_node_id) return '请选择出口节点'
+    const node = findExitNode(row)
+    if (!node) return '出口节点不存在'
+    if (!node.is_enabled) return `出口节点 ${node.name || formatNodeAddress(node)} 已停用，不能继续绑定中转`
     if (!row.listen_port || row.listen_port < 1 || row.listen_port > 65535) return '监听端口不合法'
     if (ports.has(row.listen_port)) return `监听端口 ${row.listen_port} 重复`
     ports.add(row.listen_port)

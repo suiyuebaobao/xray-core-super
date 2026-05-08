@@ -77,6 +77,9 @@ func (s *RelayService) SaveBackends(ctx context.Context, relayID uint64, reqs []
 		if err != nil {
 			return nil, fmt.Errorf("find exit node %d: %w", req.ExitNodeID, err)
 		}
+		if !exitNode.IsEnabled {
+			return nil, fmt.Errorf("exit node %d is disabled", req.ExitNodeID)
+		}
 
 		targetHost := req.TargetHost
 		if targetHost == "" {
@@ -135,6 +138,9 @@ func (s *RelayService) CreateReloadTask(ctx context.Context, relayID uint64) err
 	payloadBackends := make([]RelayBackendPayload, 0, len(backends))
 	for _, backend := range backends {
 		if !backend.IsEnabled {
+			continue
+		}
+		if backend.ExitNode == nil || !backend.ExitNode.IsEnabled {
 			continue
 		}
 		payloadBackends = append(payloadBackends, RelayBackendPayload{

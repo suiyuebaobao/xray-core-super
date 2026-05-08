@@ -93,3 +93,18 @@ func TestNormalizeDeployUint64IDs_RejectsZero(t *testing.T) {
 
 	require.Error(t, err)
 }
+
+func TestNormalizeDeployOutboundProxyURLs_MultipleLines(t *testing.T) {
+	values := normalizeDeployOutboundProxyURLs("socks5", " socks5://u1:p1@h1:3010 \n\nsocks5://u2:p2@h2:3011\r\n")
+
+	require.Equal(t, []string{
+		"socks5://u1:p1@h1:3010",
+		"socks5://u2:p2@h2:3011",
+	}, values)
+}
+
+func TestDeployProxyNodeName_WithMultipleProxyAndTransport(t *testing.T) {
+	name := deployProxyNodeName("美国家宽", "156.238.231.16", 1, 3, deployTransportOption{Transport: "xhttp"}, 2)
+
+	require.Equal(t, "美国家宽-2-XHTTP", name)
+}

@@ -94,7 +94,12 @@
           </el-select>
         </el-form-item>
         <el-form-item v-if="form.outbound_type === 'socks5'" label="上游代理 URL">
-          <el-input v-model="form.outbound_proxy_url" placeholder="socks5://user:pass@host:port" />
+          <el-input
+            v-model="form.outbound_proxy_url"
+            type="textarea"
+            :rows="4"
+            placeholder="每行一个 socks5://user:pass@host:port"
+          />
         </el-form-item>
         <el-form-item label="传输模式">
           <el-select v-model="form.transports" multiple :multiple-limit="isEdit ? 1 : 2" style="width: 100%" @change="handleTransportSelectionChange(form)">
@@ -194,7 +199,12 @@
           </el-select>
         </el-form-item>
         <el-form-item v-if="deployForm.outbound_type === 'socks5'" label="上游代理 URL">
-          <el-input v-model="deployForm.outbound_proxy_url" placeholder="socks5://user:pass@host:port" />
+          <el-input
+            v-model="deployForm.outbound_proxy_url"
+            type="textarea"
+            :rows="6"
+            placeholder="每行一个 socks5://user:pass@host:port"
+          />
         </el-form-item>
         <el-form-item label="节点分组">
           <el-select v-model="deployForm.node_group_ids" multiple filterable placeholder="部署成功后自动加入分组" style="width: 100%">
@@ -456,6 +466,10 @@ async function handleDeploy() {
       ElMessage.warning('请先扫描并勾选要部署的出口 IP')
       return
     }
+    if (deployForm.outbound_type === 'socks5' && !deployForm.outbound_proxy_url.trim()) {
+      ElMessage.warning('请填写至少一条上游 SOCKS5 代理')
+      return
+    }
     const transports = normalizedTransports(deployForm)
     if (transports.includes('tcp') && transports.includes('xhttp') && deployForm.tcp_port === deployForm.xhttp_port) {
       ElMessage.warning('TCP 和 XHTTP 端口不能相同')
@@ -630,6 +644,10 @@ async function handleSave() {
     const transports = normalizedTransports(form)
     if (isEdit.value && transports.length > 1) {
       ElMessage.warning('编辑单条节点只能选择一种传输模式')
+      return
+    }
+    if (form.outbound_type === 'socks5' && !form.outbound_proxy_url.trim()) {
+      ElMessage.warning('请填写至少一条上游 SOCKS5 代理')
       return
     }
     if (transports.includes('tcp') && transports.includes('xhttp') && form.tcp_port === form.xhttp_port) {

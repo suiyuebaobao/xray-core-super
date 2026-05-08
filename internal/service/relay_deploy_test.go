@@ -15,15 +15,17 @@ import (
 
 func setupRelayDeployTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("file:relay_deploy_test?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
 	require.NoError(t, db.AutoMigrate(
 		&model.Node{},
 		&model.Relay{},
 		&model.RelayBackend{},
 		&model.RelayConfigTask{},
 	))
-	require.NoError(t, db.Exec("CREATE TABLE IF NOT EXISTS relay_config_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, relay_id INTEGER, action TEXT, payload TEXT, status TEXT, retry_count INTEGER, last_error TEXT, scheduled_at DATETIME, locked_at DATETIME, lock_token TEXT, executed_at DATETIME, idempotency_key TEXT)").Error)
 	return db
 }
 

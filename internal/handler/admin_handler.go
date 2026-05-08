@@ -554,6 +554,38 @@ func normalizeNodeTransportFields(transport, xhttpPath, xhttpHost, xhttpMode, fl
 	}
 }
 
+func normalizeNodeOutboundProxyURLs(outboundType string, raw string) []string {
+	if normalizeNodeOutboundType(outboundType) != model.NodeOutboundSocks5 {
+		return []string{""}
+	}
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	parts := strings.Split(raw, "\n")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		result = append(result, value)
+	}
+	return result
+}
+
+func nodeNameForProxyVariant(base, host string, proxyIndex int, proxyCount int, option nodeTransportOption, optionCount int) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "raypilot-node-" + strings.TrimSpace(host)
+	}
+	name := base
+	if proxyCount > 1 {
+		name = fmt.Sprintf("%s-%d", name, proxyIndex+1)
+	}
+	if optionCount > 1 && option.Transport != "tcp" {
+		name = fmt.Sprintf("%s-%s", name, strings.ToUpper(option.Transport))
+	}
+	return name
+}
+
 type nodeTransportOption struct {
 	Transport string
 	Port      uint32
@@ -687,6 +719,11 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 	if req.LineMode == "" {
 		req.LineMode = "direct_and_relay"
 	}
+	proxyURLs := normalizeNodeOutboundProxyURLs(req.OutboundType, req.OutboundProxyURL)
+	if normalizeNodeOutboundType(req.OutboundType) == model.NodeOutboundSocks5 && len(proxyURLs) == 0 {
+		response.HandleError(c, response.ErrBadRequest)
+		return
+	}
 
 	// 计算 Agent Token 哈希（SHA-256，不存明文）
 	agentTokenHash := ""
@@ -695,7 +732,7 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 		agentTokenHash = hex.EncodeToString(h[:])
 	}
 
-	if len(options) > 1 {
+	if len(options) > 1 || len(proxyURLs) > 1 {
 		if h.nodeHostRepo == nil {
 			response.HandleError(c, response.ErrInternalServer)
 			return
@@ -715,60 +752,83 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 		listenIP := nodeListenIPForHost(req.Host)
 		nodes := make([]*model.Node, 0, len(options))
 		createdNodeIDs := make([]uint64, 0, len(options))
+		seenPorts := map[uint32]struct{}{}
 		cleanup := func() {
 			for _, id := range createdNodeIDs {
 				_ = h.nodeRepo.Delete(c.Request.Context(), id)
 			}
 			_ = h.nodeHostRepo.Delete(c.Request.Context(), nodeHost.ID)
 		}
-		for i, option := range options {
-			var outboundProxyURL *string
-			if trimmed := strings.TrimSpace(req.OutboundProxyURL); trimmed != "" {
-				outboundProxyURL = &trimmed
+		if len(proxyURLs) == 0 {
+			proxyURLs = []string{""}
+		}
+		outboundType := normalizeNodeOutboundType(req.OutboundType)
+		for proxyIndex, proxyURL := range proxyURLs {
+			for optionIndex, option := range options {
+				optionCopy := option
+				optionCopy.Port += uint32(proxyIndex)
+				if _, ok := seenPorts[optionCopy.Port]; ok {
+					cleanup()
+					response.HandleError(c, response.ErrBadRequest)
+					return
+				}
+				seenPorts[optionCopy.Port] = struct{}{}
+				var outboundProxyURL *string
+				if strings.TrimSpace(proxyURL) != "" {
+					trimmed := strings.TrimSpace(proxyURL)
+					outboundProxyURL = &trimmed
+				}
+				node := &model.Node{
+					Name:           nodeNameForProxyVariant(req.Name, req.Host, proxyIndex, len(proxyURLs), optionCopy, len(options)),
+					Protocol:       req.Protocol,
+					TrafficPool:    model.NormalizeTrafficPool(req.TrafficPool),
+					OutboundType:   outboundType,
+					Host:           req.Host,
+					ServerName:     req.ServerName,
+					PublicKey:      req.PublicKey,
+					ShortID:        req.ShortID,
+					Fingerprint:    req.Fingerprint,
+					LineMode:       req.LineMode,
+					NodeHostID:     &nodeHost.ID,
+					ListenIP:       listenIP,
+					AgentBaseURL:   req.AgentBaseURL,
+					AgentTokenHash: agentTokenHash,
+					SortWeight:     req.SortWeight + proxyIndex*len(options) + optionIndex,
+					IsEnabled:      req.IsEnabled,
+				}
+				if outboundType == model.NodeOutboundDirect {
+					node.OutboundIP = listenIP
+				}
+				node.OutboundProxyURL = outboundProxyURL
+				applyNodeTransportOption(node, optionCopy)
+				created, err := h.nodeRepo.Create(c.Request.Context(), node)
+				if err != nil {
+					cleanup()
+					response.HandleError(c, response.ErrInternalServer)
+					return
+				}
+				createdNodeIDs = append(createdNodeIDs, created.ID)
+				created.XrayInboundTag = fmt.Sprintf("node_%d_in", created.ID)
+				created.XrayOutboundTag = fmt.Sprintf("node_%d_out", created.ID)
+				if err := h.nodeRepo.Update(c.Request.Context(), created); err != nil {
+					cleanup()
+					response.HandleError(c, response.ErrInternalServer)
+					return
+				}
+				nodes = append(nodes, created)
 			}
-			node := &model.Node{
-				Name:             multiTransportNodeName(req.Name, option),
-				Protocol:         req.Protocol,
-				TrafficPool:      model.NormalizeTrafficPool(req.TrafficPool),
-				OutboundType:     normalizeNodeOutboundType(req.OutboundType),
-				Host:             req.Host,
-				ServerName:       req.ServerName,
-				PublicKey:        req.PublicKey,
-				ShortID:          req.ShortID,
-				Fingerprint:      req.Fingerprint,
-				LineMode:         req.LineMode,
-				NodeHostID:       &nodeHost.ID,
-				ListenIP:         listenIP,
-				OutboundIP:       listenIP,
-				OutboundProxyURL: outboundProxyURL,
-				AgentBaseURL:     req.AgentBaseURL,
-				AgentTokenHash:   agentTokenHash,
-				SortWeight:       req.SortWeight + i,
-				IsEnabled:        req.IsEnabled,
-			}
-			applyNodeTransportOption(node, option)
-			created, err := h.nodeRepo.Create(c.Request.Context(), node)
-			if err != nil {
-				cleanup()
-				response.HandleError(c, response.ErrInternalServer)
-				return
-			}
-			createdNodeIDs = append(createdNodeIDs, created.ID)
-			created.XrayInboundTag = fmt.Sprintf("node_%d_in", created.ID)
-			created.XrayOutboundTag = fmt.Sprintf("node_%d_out", created.ID)
-			if err := h.nodeRepo.Update(c.Request.Context(), created); err != nil {
-				cleanup()
-				response.HandleError(c, response.ErrInternalServer)
-				return
-			}
-			nodes = append(nodes, created)
 		}
 		response.Success(c, gin.H{"node_host": nodeHost, "nodes": nodes})
 		return
 	}
 
 	var outboundProxyURL *string
-	if trimmed := strings.TrimSpace(req.OutboundProxyURL); trimmed != "" {
+	if len(proxyURLs) > 0 {
+		trimmed := strings.TrimSpace(proxyURLs[0])
+		if trimmed != "" {
+			outboundProxyURL = &trimmed
+		}
+	} else if trimmed := strings.TrimSpace(req.OutboundProxyURL); trimmed != "" {
 		outboundProxyURL = &trimmed
 	}
 	node := &model.Node{

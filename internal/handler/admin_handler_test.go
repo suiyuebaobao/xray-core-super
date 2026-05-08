@@ -803,6 +803,69 @@ func TestAdminHandler_CreateNode_SavesSocks5Outbound(t *testing.T) {
 	assert.Equal(t, "residential", data["traffic_pool"])
 }
 
+func TestAdminHandler_CreateNode_MultipleSocks5CreatesMultipleLogicalNodes(t *testing.T) {
+	r, adminToken := setupTestAdminApp(t)
+
+	body := map[string]interface{}{
+		"name":               "multi-socks5-home-node",
+		"protocol":           "vless",
+		"host":               "203.0.113.251",
+		"traffic_pool":       "residential",
+		"outbound_type":      "socks5",
+		"outbound_proxy_url": "socks5://user1:pass1@example.com:3010\nsocks5://user2:pass2@example.com:3011",
+		"transports":         []string{"tcp", "xhttp"},
+		"tcp_port":           24463,
+		"xhttp_port":         24465,
+		"xhttp_path":         "/raypilot",
+		"xhttp_mode":         "auto",
+		"server_name":        "www.microsoft.com",
+		"public_key":         "test-public-key-home-12345678901234567890",
+		"short_id":           "1a2b3c4d",
+		"fingerprint":        "chrome",
+		"flow":               "xtls-rprx-vision",
+		"line_mode":          "direct_only",
+		"agent_base_url":     "http://203.0.113.251:18080",
+		"agent_token":        "multi-socks5-agent-token",
+		"is_enabled":         true,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/nodes", bytes.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data := resp["data"].(map[string]interface{})
+	nodes := data["nodes"].([]interface{})
+	require.Len(t, nodes, 4)
+
+	seenNames := map[string]struct{}{}
+	seenPorts := map[float64]struct{}{}
+	for _, item := range nodes {
+		node := item.(map[string]interface{})
+		assert.Equal(t, "socks5", node["outbound_type"])
+		assert.Equal(t, "residential", node["traffic_pool"])
+		if node["outbound_proxy_url"] != nil {
+			assert.Contains(t, node["outbound_proxy_url"].(string), "socks5://user")
+		}
+		name := node["name"].(string)
+		if _, ok := seenNames[name]; ok {
+			t.Fatalf("duplicate node name %s", name)
+		}
+		seenNames[name] = struct{}{}
+		port := node["port"].(float64)
+		if _, ok := seenPorts[port]; ok {
+			t.Fatalf("duplicate node port %v", port)
+		}
+		seenPorts[port] = struct{}{}
+	}
+}
+
 func TestAdminHandler_CreateNode_XHTTPNormalizesTransport(t *testing.T) {
 	r, token := setupTestAdminApp(t)
 

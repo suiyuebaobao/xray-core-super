@@ -87,6 +87,16 @@ type DeployRequest struct {
 	ReplaceExistingRole bool     `json:"replace_existing_role"`
 }
 
+func normalizeDeployOutboundRequest(req *DeployRequest) error {
+	if normalizeDeployOutboundType(req.OutboundType) != model.NodeOutboundSocks5 {
+		return nil
+	}
+	if len(normalizeDeployOutboundProxyURLs(req.OutboundType, req.OutboundProxyURL)) == 0 {
+		return fmt.Errorf("至少需要一条 socks5 上游代理")
+	}
+	return nil
+}
+
 // DeployResult 部署结果。
 type DeployResult struct {
 	NodeID        uint64   `json:"node_id,omitempty"`
@@ -162,6 +172,38 @@ type deployTransportOption struct {
 	XHTTPHost string
 	XHTTPMode string
 	Flow      string
+}
+
+func normalizeDeployOutboundProxyURLs(outboundType string, raw string) []string {
+	if normalizeDeployOutboundType(outboundType) != model.NodeOutboundSocks5 {
+		return []string{""}
+	}
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	parts := strings.Split(raw, "\n")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		result = append(result, value)
+	}
+	return result
+}
+
+func deployProxyNodeName(base, host string, proxyIndex int, proxyCount int, option deployTransportOption, optionCount int) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "raypilot-node-" + strings.TrimSpace(host)
+	}
+	name := base
+	if proxyCount > 1 {
+		name = fmt.Sprintf("%s-%d", name, proxyIndex+1)
+	}
+	if optionCount > 1 && option.Transport != "tcp" {
+		name = fmt.Sprintf("%s-%s", name, strings.ToUpper(option.Transport))
+	}
+	return name
 }
 
 func normalizeDeployTransportOptions(req *DeployRequest) ([]deployTransportOption, error) {
@@ -298,11 +340,21 @@ func normalizeXHTTPMode(mode string) string {
 
 // Deploy 一键部署节点。
 func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*DeployResult, error) {
+	if err := normalizeDeployOutboundRequest(req); err != nil {
+		return &DeployResult{Steps: []Step{}}, err
+	}
 	options, err := normalizeDeployTransportOptions(req)
 	if err != nil {
 		return &DeployResult{Steps: []Step{}}, err
 	}
-	if req.MultiIPEnabled || len(options) > 1 {
+	proxyURLs := normalizeDeployOutboundProxyURLs(req.OutboundType, req.OutboundProxyURL)
+	if normalizeDeployOutboundType(req.OutboundType) == model.NodeOutboundSocks5 && len(proxyURLs) == 0 {
+		return &DeployResult{Steps: []Step{}}, fmt.Errorf("socks5 outbound requires at least one upstream proxy url")
+	}
+	if req.MultiIPEnabled && len(proxyURLs) > 1 {
+		return &DeployResult{Steps: []Step{}}, fmt.Errorf("multi_ip_enabled and multiple outbound proxies cannot be enabled together in one deployment")
+	}
+	if req.MultiIPEnabled || len(options) > 1 || len(proxyURLs) > 1 {
 		return s.deployMultiLine(ctx, req, options)
 	}
 
@@ -409,7 +461,10 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 		AgentTokenHash: hex.EncodeToString(hash[:]),
 		IsEnabled:      true,
 	}
-	if trimmed := strings.TrimSpace(req.OutboundProxyURL); trimmed != "" {
+	if len(proxyURLs) > 0 && strings.TrimSpace(proxyURLs[0]) != "" {
+		trimmed := strings.TrimSpace(proxyURLs[0])
+		node.OutboundProxyURL = &trimmed
+	} else if trimmed := strings.TrimSpace(req.OutboundProxyURL); trimmed != "" {
 		node.OutboundProxyURL = &trimmed
 	}
 	applyDeployTransportOption(node, options[0])
@@ -522,6 +577,10 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 		return result, fmt.Errorf("node host repository is not configured")
 	}
 	selectedIPs := []string{strings.TrimSpace(req.SSHHost)}
+	proxyURLs := normalizeDeployOutboundProxyURLs(req.OutboundType, req.OutboundProxyURL)
+	if len(proxyURLs) == 0 {
+		proxyURLs = []string{""}
+	}
 	if req.MultiIPEnabled {
 		var err error
 		selectedIPs, err = normalizeSelectedIPs(req.SelectedIPs)
@@ -636,57 +695,68 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 	addStep("创建主机记录", "success", fmt.Sprintf("物理主机已创建 (ID: %d)", nodeHost.ID))
 
 	nodeConfigs := make([]MultiExitNodeConfig, 0, len(selectedIPs)*len(options))
+	seenPorts := map[uint32]struct{}{}
 	for i, ip := range selectedIPs {
 		listenIP := deployListenIP(req.MultiIPEnabled, ip)
-		for j, option := range options {
-			nodeName := deployLogicalNodeName(req.NodeName, ip, i, len(selectedIPs), option, len(options))
-			node := &model.Node{
-				Name:           nodeName,
-				Protocol:       "vless",
-				TrafficPool:    model.NormalizeTrafficPool(req.TrafficPool),
-				OutboundType:   normalizeDeployOutboundType(req.OutboundType),
-				Host:           ip,
-				ServerName:     "www.microsoft.com",
-				LineMode:       "direct_and_relay",
-				NodeHostID:     &nodeHost.ID,
-				ListenIP:       listenIP,
-				OutboundIP:     listenIP,
-				AgentBaseURL:   fmt.Sprintf("http://%s:8080", req.SSHHost),
-				AgentTokenHash: tokenHash,
-				IsEnabled:      true,
-				SortWeight:     i*len(options) + j,
+		for proxyIndex, proxyURL := range proxyURLs {
+			for j, option := range options {
+				optionCopy := option
+				optionCopy.Port += uint32(proxyIndex)
+				if _, ok := seenPorts[optionCopy.Port]; ok {
+					return fail("创建节点记录失败: duplicate listen port %d", optionCopy.Port)
+				}
+				seenPorts[optionCopy.Port] = struct{}{}
+				nodeName := deployProxyNodeName(req.NodeName, ip, proxyIndex, len(proxyURLs), optionCopy, len(options))
+				node := &model.Node{
+					Name:           nodeName,
+					Protocol:       "vless",
+					TrafficPool:    model.NormalizeTrafficPool(req.TrafficPool),
+					OutboundType:   normalizeDeployOutboundType(req.OutboundType),
+					Host:           ip,
+					ServerName:     "www.microsoft.com",
+					LineMode:       "direct_and_relay",
+					NodeHostID:     &nodeHost.ID,
+					ListenIP:       listenIP,
+					AgentBaseURL:   fmt.Sprintf("http://%s:8080", req.SSHHost),
+					AgentTokenHash: tokenHash,
+					IsEnabled:      true,
+					SortWeight:     (i * len(proxyURLs) * len(options)) + (proxyIndex * len(options)) + j,
+				}
+				if node.OutboundType == model.NodeOutboundDirect {
+					node.OutboundIP = listenIP
+				}
+				if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
+					node.OutboundProxyURL = &trimmed
+				}
+				applyDeployTransportOption(node, optionCopy)
+				node, err = s.nodeRepo.Create(ctx, node)
+				if err != nil {
+					addStep("创建节点记录", "failed", err.Error())
+					return fail("创建节点记录失败: %w", err)
+				}
+				createdNodeIDs = append(createdNodeIDs, node.ID)
+				node.XrayInboundTag = fmt.Sprintf("node_%d_in", node.ID)
+				node.XrayOutboundTag = fmt.Sprintf("node_%d_out", node.ID)
+				if err := s.nodeRepo.Update(ctx, node); err != nil {
+					addStep("更新节点标签", "failed", err.Error())
+					return fail("更新节点标签失败: %w", err)
+				}
+				nodeConfigs = append(nodeConfigs, MultiExitNodeConfig{
+					NodeID:            node.ID,
+					IP:                listenIP,
+					Port:              node.Port,
+					Transport:         node.Transport,
+					OutboundType:      node.OutboundType,
+					OutboundProxyURL:  strings.TrimSpace(derefString(node.OutboundProxyURL)),
+					XHTTPPath:         node.XHTTPPath,
+					XHTTPHost:         node.XHTTPHost,
+					XHTTPMode:         node.XHTTPMode,
+					InboundTag:        node.XrayInboundTag,
+					OutboundTag:       node.XrayOutboundTag,
+					XrayUserKeyPrefix: fmt.Sprintf("node_%d__", node.ID),
+				})
+				addStep("创建节点记录", "success", fmt.Sprintf("节点 %s:%d/%s 已创建 (ID: %d)", ip, node.Port, node.Transport, node.ID))
 			}
-			if trimmed := strings.TrimSpace(req.OutboundProxyURL); trimmed != "" {
-				node.OutboundProxyURL = &trimmed
-			}
-			applyDeployTransportOption(node, option)
-			node, err = s.nodeRepo.Create(ctx, node)
-			if err != nil {
-				addStep("创建节点记录", "failed", err.Error())
-				return fail("创建节点记录失败: %w", err)
-			}
-			createdNodeIDs = append(createdNodeIDs, node.ID)
-			node.XrayInboundTag = fmt.Sprintf("node_%d_in", node.ID)
-			node.XrayOutboundTag = fmt.Sprintf("node_%d_out", node.ID)
-			if err := s.nodeRepo.Update(ctx, node); err != nil {
-				addStep("更新节点标签", "failed", err.Error())
-				return fail("更新节点标签失败: %w", err)
-			}
-			nodeConfigs = append(nodeConfigs, MultiExitNodeConfig{
-				NodeID:            node.ID,
-				IP:                listenIP,
-				Port:              node.Port,
-				Transport:         node.Transport,
-				OutboundType:      node.OutboundType,
-				OutboundProxyURL:  strings.TrimSpace(derefString(node.OutboundProxyURL)),
-				XHTTPPath:         node.XHTTPPath,
-				XHTTPHost:         node.XHTTPHost,
-				XHTTPMode:         node.XHTTPMode,
-				InboundTag:        node.XrayInboundTag,
-				OutboundTag:       node.XrayOutboundTag,
-				XrayUserKeyPrefix: fmt.Sprintf("node_%d__", node.ID),
-			})
-			addStep("创建节点记录", "success", fmt.Sprintf("节点 %s:%d/%s 已创建 (ID: %d)", ip, node.Port, node.Transport, node.ID))
 		}
 	}
 

@@ -388,6 +388,9 @@ func (r *RuntimeLogReader) Read(source RuntimeLogSource, lineCount int, keyword 
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []RuntimeLogLine{}, nil
+		}
 		return nil, err
 	}
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")

@@ -122,6 +122,7 @@ suiyue/
 
 - 日志中心 v1 已落地 `/admin/logs`、`/api/admin/logs/runtime`、`/api/admin/logs/deployments`、`/api/admin/logs/operations`，不是规划功能。
 - 运行日志只读取宿主机 `logs/api.log` 与 `logs/worker.log`，后台接口必须限制最大返回行数并只允许管理员访问。
+- Docker Compose 部署必须把宿主机 `./logs` 挂载到 API/Worker 容器 `/app/logs`，并确保 API 写入 `api.log`、Worker 写入 `worker.log`；日志文件尚未创建时，运行日志接口应返回空列表，不得 500。
 - 操作日志必须记录用户注册、登录、退出、资料修改、密码修改、下单、兑换码兑换、订阅下载，以及管理员新增/删除/禁用用户、重置密码、修改订阅、生成兑换码等关键动作。
 - 部署日志必须记录一键部署出口节点和中转节点的结果、耗时、步骤明细、目标服务器 IP、操作者 IP、逻辑节点/中转/后端记录 ID。
 - 所有结构化日志必须记录可用 IP 信息：`client_ip` 或 `operator_ip`，并尽量保留 `X-Forwarded-For`、`X-Real-IP`、`User-Agent` 以便排障。

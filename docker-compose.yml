@@ -40,9 +40,12 @@ services:
     restart: always
     env_file:
       - .env
+    command: sh -c "mkdir -p /app/logs && touch /app/logs/api.log && /app/api 2>&1 | tee -a /app/logs/api.log"
     # 不暴露端口到宿主机，仅 nginx 访问
     expose:
       - "3000"
+    volumes:
+      - ./logs:/app/logs
     depends_on:
       mysql:
         condition: service_healthy
@@ -56,6 +59,9 @@ services:
     restart: always
     env_file:
       - .env
+    command: sh -c "mkdir -p /app/logs && touch /app/logs/worker.log && /app/worker 2>&1 | tee -a /app/logs/worker.log"
+    volumes:
+      - ./logs:/app/logs
     depends_on:
       mysql:
         condition: service_healthy

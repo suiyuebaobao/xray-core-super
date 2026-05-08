@@ -98,3 +98,12 @@ func TestRuntimeLogService_Read_FiltersKeyword(t *testing.T) {
 	require.Equal(t, "error", lines[0].Level)
 	require.Contains(t, lines[0].Message, "failed deploy")
 }
+
+func TestRuntimeLogService_Read_MissingFileReturnsEmpty(t *testing.T) {
+	logDir := t.TempDir()
+	svc := service.NewRuntimeLogService(repository.NewRuntimeLogReader(logDir))
+
+	lines, err := svc.Read(context.Background(), "api", 100, "")
+	require.NoError(t, err)
+	require.Empty(t, lines)
+}

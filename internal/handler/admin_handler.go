@@ -512,7 +512,7 @@ type nodeAccessNodeSyncer interface {
 	TriggerForNodeGroups(ctx context.Context, nodeID uint64, groupIDs []uint64, action string) error
 }
 
-func normalizeNodeTransportFields(transport, xhttpPath, xhttpHost, xhttpMode, flow *string) {
+func normalizeNodeTransportFields(transport, outboundType, xhttpPath, xhttpHost, xhttpMode, flow *string) {
 	t := strings.ToLower(strings.TrimSpace(*transport))
 	if t == "" {
 		t = "tcp"
@@ -547,6 +547,10 @@ func normalizeNodeTransportFields(transport, xhttpPath, xhttpHost, xhttpMode, fl
 	*xhttpPath = ""
 	*xhttpHost = ""
 	*xhttpMode = "auto"
+	if normalizeNodeOutboundType(*outboundType) == model.NodeOutboundSocks5 {
+		*flow = ""
+		return
+	}
 	if strings.TrimSpace(*flow) == "" {
 		*flow = "xtls-rprx-vision"
 	} else {
@@ -626,6 +630,7 @@ func normalizeNodeTransportOptions(req *model.CreateNodeRequest) ([]nodeTranspor
 
 	options := make([]nodeTransportOption, 0, len(transports))
 	seenPorts := map[uint32]string{}
+	outboundType := normalizeNodeOutboundType(req.OutboundType)
 	for _, transport := range transports {
 		option := nodeTransportOption{Transport: transport}
 		if transport == "xhttp" {
@@ -638,7 +643,7 @@ func normalizeNodeTransportOptions(req *model.CreateNodeRequest) ([]nodeTranspor
 			option.Port = tcpPort
 			option.Flow = flow
 		}
-		normalizeNodeTransportFields(&option.Transport, &option.XHTTPPath, &option.XHTTPHost, &option.XHTTPMode, &option.Flow)
+		normalizeNodeTransportFields(&option.Transport, &outboundType, &option.XHTTPPath, &option.XHTTPHost, &option.XHTTPMode, &option.Flow)
 		if option.Port == 0 || option.Port > 65535 {
 			return nil, fmt.Errorf("%s 端口无效: %d", strings.ToUpper(option.Transport), option.Port)
 		}
@@ -948,7 +953,7 @@ func (h *AdminNodeHandler) Update(c *gin.Context) {
 	if req.Transport == "" {
 		req.Transport = node.Transport
 	}
-	normalizeNodeTransportFields(&req.Transport, &req.XHTTPPath, &req.XHTTPHost, &req.XHTTPMode, &req.Flow)
+	normalizeNodeTransportFields(&req.Transport, &node.OutboundType, &req.XHTTPPath, &req.XHTTPHost, &req.XHTTPMode, &req.Flow)
 	if req.Transport != "" {
 		node.Transport = req.Transport
 	}
@@ -972,7 +977,7 @@ func (h *AdminNodeHandler) Update(c *gin.Context) {
 	if req.Flow != "" {
 		node.Flow = req.Flow
 	}
-	if req.Transport == "xhttp" {
+	if req.Transport == "xhttp" || node.OutboundType == model.NodeOutboundSocks5 {
 		node.Flow = ""
 	}
 	if req.LineMode != "" {

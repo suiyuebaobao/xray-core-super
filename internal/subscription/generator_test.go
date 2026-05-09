@@ -314,6 +314,28 @@ func TestGenerator_GenerateByToken_FiltersExhaustedTrafficPoolNodes(t *testing.T
 	assert.Contains(t, result.Content, "res.example.com")
 }
 
+func TestGenerator_GenerateByToken_NoPlanNodeGroups_ReturnsNoNodesError(t *testing.T) {
+	db, gen := setupSubTestDB(t)
+	ctx := context.Background()
+
+	user := &model.User{UUID: "nogroup-user", Username: "nogroup", PasswordHash: "h", XrayUserKey: "nogroup@x", Status: "active"}
+	require.NoError(t, db.Create(user).Error)
+
+	plan := &model.Plan{Name: "NoGroupPlan", Price: 10, DurationDays: 30, TrafficLimit: 10737418240, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+
+	sub := &model.UserSubscription{
+		UserID: user.ID, PlanID: plan.ID, StartDate: time.Now(),
+		ExpireDate: time.Now().AddDate(0, 0, 30), TrafficLimit: 10737418240, Status: "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+	require.NoError(t, db.Create(&model.SubscriptionToken{UserID: user.ID, SubscriptionID: &sub.ID, Token: "nogroup-token"}).Error)
+
+	_, err := gen.GenerateByToken(ctx, "nogroup-token", "clash")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "当前套餐没有可用节点")
+}
+
 // TestGenerator_GenerateByToken_Base64 测试通过 token 生成 Base64 订阅。
 func TestGenerator_GenerateByToken_Base64(t *testing.T) {
 	db, gen := setupSubTestDB(t)

@@ -386,6 +386,71 @@ func TestBuildNodeOutbound_Socks5RequiresProxyURL(t *testing.T) {
 	}
 }
 
+func TestHandleMultiUpsertUser_ExplicitTCPWithoutFlowOmitsFlow(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	cfg := buildMultiExitXrayConfigMap([]MultiExitNodeConfig{
+		{
+			NodeID:            150,
+			IP:                "156.238.231.16",
+			Port:              24465,
+			Transport:         "tcp",
+			OutboundType:      "socks5",
+			OutboundProxyURL:  "socks5://user:pass@example.com:3010",
+			InboundTag:        "node_150_in",
+			OutboundTag:       "node_150_out",
+			XrayUserKeyPrefix: "node_150__",
+		},
+	}, multiExitReality{
+		ServerName: "www.microsoft.com",
+		PublicKey:  "pub",
+		PrivateKey: "priv",
+		ShortID:    "",
+	}, nil, "127.0.0.1:10085")
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	agent := NewAgent(&Config{
+		AgentRole:      "multi_exit",
+		XrayConfigPath: configPath,
+		XrayBinary:     "true",
+		MultiNodes: []MultiExitNodeConfig{
+			{
+				NodeID:            150,
+				Transport:         "tcp",
+				OutboundType:      "socks5",
+				InboundTag:        "node_150_in",
+				XrayUserKeyPrefix: "node_150__",
+			},
+		},
+	})
+	payload := `{"xray_user_key":"user@example.com","uuid":"00000000-0000-0000-0000-000000000001","transport":"tcp"}`
+
+	if errMsg := agent.handleMultiUpsertUser(150, payload); errMsg != "" {
+		t.Fatalf("handleMultiUpsertUser returned %s", errMsg)
+	}
+
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var updated map[string]interface{}
+	if err := json.Unmarshal(raw, &updated); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	inbounds := updated["inbounds"].([]interface{})
+	inbound := inbounds[findTaggedObject(inbounds, "node_150_in")].(map[string]interface{})
+	clients := inbound["settings"].(map[string]interface{})["clients"].([]interface{})
+	client := clients[0].(map[string]interface{})
+	if _, ok := client["flow"]; ok {
+		t.Fatalf("client flow = %#v, want omitted", client["flow"])
+	}
+}
+
 func TestXrayStatValueUnmarshal_AcceptsNumberAndString(t *testing.T) {
 	var numberValue xrayStatValue
 	if err := json.Unmarshal([]byte(`123`), &numberValue); err != nil {

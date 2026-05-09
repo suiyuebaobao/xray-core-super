@@ -33,7 +33,7 @@
         </template>
       </el-table-column>
       <el-table-column label="套餐" min-width="160">
-        <template #default="{ row }">{{ getPlanName(row.plan_id) }}</template>
+        <template #default="{ row }">{{ getCodePlanName(row) }}</template>
       </el-table-column>
       <el-table-column prop="duration_days" label="时长（天）" width="100" />
       <el-table-column prop="is_used" label="状态" width="90">
@@ -150,6 +150,10 @@ function getPlan(planID) {
 
 function getPlanName(planID) {
   return getPlan(planID)?.name || '未知套餐'
+}
+
+function getCodePlanName(row) {
+  return row.plan_name || getPlanName(row.plan_id)
 }
 
 function ensureSelectedPlan() {

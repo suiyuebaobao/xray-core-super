@@ -2044,7 +2044,7 @@ func (a *Agent) handleUpsertUser(payload string) string {
 
 	if normalizeAgentTransport(p.Transport) == "xhttp" {
 		p.Flow = ""
-	} else if p.Flow == "" {
+	} else if p.Transport == "" && p.Flow == "" {
 		p.Flow = "xtls-rprx-vision"
 	}
 
@@ -2082,7 +2082,7 @@ func (a *Agent) handleMultiUpsertUser(nodeID uint64, payload string) string {
 	}
 	if normalizeAgentTransport(transport) == "xhttp" {
 		p.Flow = ""
-	} else if p.Flow == "" {
+	} else if p.Transport == "" && p.Flow == "" {
 		p.Flow = "xtls-rprx-vision"
 	}
 	localKey := node.localXrayUserKey(p.XrayUserKey)

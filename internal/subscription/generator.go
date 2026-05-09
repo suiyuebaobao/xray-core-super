@@ -145,7 +145,7 @@ func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, for
 	}
 
 	if len(allNodes) == 0 {
-		return nil, response.ErrInternalServer
+		return nil, response.ErrSubscriptionNoNodes
 	}
 
 	// 7. 构建 NodeConfig 列表。nodes 表表示出口节点；中转线路只替换 server/port，Reality 参数仍沿用出口节点。
@@ -181,7 +181,7 @@ func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, for
 	}
 
 	if len(nodeConfigs) == 0 {
-		return nil, response.ErrInternalServer
+		return nil, response.ErrSubscriptionNoNodes
 	}
 
 	// 8. 按格式生成
@@ -268,36 +268,38 @@ func trimProfileExtension(name string) string {
 
 // NodeConfig 节点配置抽象，作为统一数据源。
 type NodeConfig struct {
-	Name        string
-	Server      string
-	Port        uint32
-	UUID        string
-	ServerName  string
-	PublicKey   string
-	ShortID     string
-	Fingerprint string
-	Flow        string
-	Transport   string
-	XHTTPPath   string
-	XHTTPHost   string
-	XHTTPMode   string
+	Name         string
+	Server       string
+	Port         uint32
+	UUID         string
+	ServerName   string
+	PublicKey    string
+	ShortID      string
+	Fingerprint  string
+	Flow         string
+	Transport    string
+	OutboundType string
+	XHTTPPath    string
+	XHTTPHost    string
+	XHTTPMode    string
 }
 
 func buildNodeConfigFromExitNode(node model.Node, uuid string, name string, server string, port uint32) NodeConfig {
 	return NodeConfig{
-		Name:        name,
-		Server:      server,
-		Port:        port,
-		UUID:        uuid,
-		ServerName:  node.ServerName,
-		PublicKey:   node.PublicKey,
-		ShortID:     node.ShortID,
-		Fingerprint: node.Fingerprint,
-		Flow:        node.Flow,
-		Transport:   node.Transport,
-		XHTTPPath:   node.XHTTPPath,
-		XHTTPHost:   node.XHTTPHost,
-		XHTTPMode:   node.XHTTPMode,
+		Name:         name,
+		Server:       server,
+		Port:         port,
+		UUID:         uuid,
+		ServerName:   node.ServerName,
+		PublicKey:    node.PublicKey,
+		ShortID:      node.ShortID,
+		Fingerprint:  node.Fingerprint,
+		Flow:         node.Flow,
+		Transport:    node.Transport,
+		OutboundType: node.OutboundType,
+		XHTTPPath:    node.XHTTPPath,
+		XHTTPHost:    node.XHTTPHost,
+		XHTTPMode:    node.XHTTPMode,
 	}
 }
 
@@ -330,6 +332,9 @@ func normalizeSubscriptionXHTTPMode(mode string) string {
 
 func subscriptionFlowForNode(nc NodeConfig) string {
 	if normalizeSubscriptionTransport(nc.Transport) == "xhttp" {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(nc.OutboundType), model.NodeOutboundSocks5) {
 		return ""
 	}
 	flow := strings.TrimSpace(nc.Flow)

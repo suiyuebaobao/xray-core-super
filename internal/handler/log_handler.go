@@ -27,13 +27,17 @@ func (h *AdminLogHandler) Runtime(c *gin.Context) {
 	source := c.DefaultQuery("source", "api")
 	lineCount := parsePositiveInt(c.DefaultQuery("lines", "200"), 200)
 	keyword := c.Query("keyword")
-	lines, err := h.runtimeSvc.Read(c.Request.Context(), source, lineCount, keyword)
+	date := c.Query("date")
+	hour := c.Query("hour")
+	lines, err := h.runtimeSvc.Read(c.Request.Context(), source, lineCount, keyword, date, hour)
 	if err != nil {
 		response.HandleError(c, response.ErrInternalServer)
 		return
 	}
 	response.Success(c, gin.H{
 		"source": source,
+		"date":   date,
+		"hour":   hour,
 		"lines":  lines,
 		"count":  len(lines),
 	})

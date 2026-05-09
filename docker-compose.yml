@@ -40,7 +40,7 @@ services:
     restart: always
     env_file:
       - .env
-    command: sh -c "mkdir -p /app/logs && touch /app/logs/api.log && /app/api 2>&1 | tee -a /app/logs/api.log"
+    command: ["/app/hourly-log.sh", "api", "/app/api"]
     # 不暴露端口到宿主机，仅 nginx 访问
     expose:
       - "3000"
@@ -59,7 +59,7 @@ services:
     restart: always
     env_file:
       - .env
-    command: sh -c "mkdir -p /app/logs && touch /app/logs/worker.log && /app/worker 2>&1 | tee -a /app/logs/worker.log"
+    command: ["/app/hourly-log.sh", "worker", "/app/worker"]
     volumes:
       - ./logs:/app/logs
     depends_on:

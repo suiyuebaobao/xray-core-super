@@ -132,7 +132,7 @@ JWT 双 Token：
 - 套餐列表、用户套餐选择、下单和兑换码开通不得使用 `is_deleted=true` 的套餐。
 - 套餐流量采用固定双池：`normal`（普通流量）与 `residential`（家宽流量）。`plans.traffic_limit` / `user_subscriptions.traffic_limit` / `user_subscriptions.used_traffic` 继续表示普通流量兼容字段，家宽流量使用独立字段维护。
 - 订阅超额判断必须按流量池分别处理：普通流量耗尽只影响普通节点，家宽流量耗尽只影响家宽节点，不能混扣，也不能把单池耗尽视为整个订阅不可用。
-- 兑换码、管理员改订阅、基础套餐迁移和注册自动分配基础套餐时，必须同时维护普通流量和家宽流量字段；未显式设置家宽流量时默认 `0`。
+- 兑换码、管理员改订阅、基础套餐迁移和注册自动分配基础套餐时，必须同时维护普通流量和家宽流量字段；未显式设置家宽流量时默认 `0`。兑换码续费已有有效订阅时，必须同时叠加 `traffic_limit` 与 `residential_traffic_limit`，保留 `used_traffic` 与 `residential_used_traffic`，不能只叠加普通流量。
 
 ### 双流量池规则
 
@@ -156,8 +156,8 @@ JWT 双 Token：
 ### 日志中心与审计规则
 
 - 日志中心 v1 已落地 `/admin/logs`、`/api/admin/logs/runtime`、`/api/admin/logs/deployments`、`/api/admin/logs/operations`，不是规划功能。
-- 运行日志只读取宿主机 `logs/api.log` 与 `logs/worker.log`，后台接口必须限制最大返回行数并只允许管理员访问。
-- Docker Compose 部署必须把宿主机 `./logs` 挂载到 API/Worker 容器 `/app/logs`，并确保 API 写入 `api.log`、Worker 写入 `worker.log`；日志文件尚未创建时，运行日志接口应返回空列表，不得 500。
+- 运行日志读取宿主机按小时切分的 `logs/api/YYYY-MM-DD/HH.log` 与 `logs/worker/YYYY-MM-DD/HH.log`，后台接口必须限制最大返回行数并只允许管理员访问；旧版 `logs/api.log`、`logs/worker.log` 仅作为兼容读取。
+- Docker Compose 部署必须把宿主机 `./logs` 挂载到 API/Worker 容器 `/app/logs`，并通过 `deploy/scripts/hourly-log.sh` 写入按日期和小时切分的日志文件；日志文件尚未创建时，运行日志接口应返回空列表，不得 500。
 - 操作日志必须记录用户注册、登录、退出、资料修改、密码修改、下单、兑换码兑换、订阅下载，以及管理员新增/删除/禁用用户、重置密码、修改订阅、生成兑换码等关键动作。
 - 部署日志必须记录一键部署出口节点和中转节点的结果、耗时、步骤明细、目标服务器 IP、操作者 IP、逻辑节点/中转/后端记录 ID。
 - 所有结构化日志必须记录可用 IP 信息：`client_ip` 或 `operator_ip`，并尽量保留 `X-Forwarded-For`、`X-Real-IP`、`User-Agent` 以便排障。
@@ -174,6 +174,7 @@ JWT 双 Token：
 - `nodes.last_traffic_report_at` 表示中心收到流量报告的时间，`nodes.last_traffic_success_at` 表示成功处理到的节点采集时间，不得混用。
 - `nodes.protocol` 表示 VLESS 等协议，`nodes.transport` 表示传输层；当前默认 `tcp`，可选 `xhttp`。
 - XHTTP 节点仍使用 VLESS + Reality，但必须清空 `flow`，不得给 Xray clients 或订阅写入 `xtls-rprx-vision`。
+- SOCKS5 家宽节点同样必须清空 `flow`，即使 `transport=tcp` 也不得给 Xray clients、节点同步 payload 或订阅写入 `xtls-rprx-vision`；普通直连 TCP 节点才默认使用 Vision flow。
 - XHTTP 参数由 `nodes.xhttp_path`、`nodes.xhttp_host`、`nodes.xhttp_mode` 管理；订阅输出必须包含 `network/type=xhttp` 和 XHTTP 参数。
 - 节点的 `traffic_pool` 与协议、传输层独立；同一物理服务器可同时部署普通池和家宽池逻辑节点。
 - 节点的 `outbound_type` 与 `traffic_pool` 独立；同一物理服务器可同时托管普通 IP 型节点和 SOCKS5 上游型家宽节点。

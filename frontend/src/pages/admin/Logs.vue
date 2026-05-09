@@ -19,6 +19,17 @@
             <el-option label="500 行" :value="500" />
             <el-option label="1000 行" :value="1000" />
           </el-select>
+          <el-date-picker
+            v-model="runtimeFilters.date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="日志日期"
+            clearable
+            style="width: 160px"
+          />
+          <el-select v-model="runtimeFilters.hour" clearable placeholder="小时" style="width: 110px">
+            <el-option v-for="hour in runtimeHourOptions" :key="hour" :label="`${hour}:00`" :value="hour" />
+          </el-select>
           <el-input v-model="runtimeFilters.keyword" placeholder="关键字过滤" clearable style="width: 260px" />
           <el-button type="primary" @click="fetchRuntimeLogs" :loading="loading">查询</el-button>
         </div>
@@ -26,6 +37,7 @@
         <div class="runtime-log-panel">
           <div v-for="line in runtimeLogs" :key="`${line.line_number}-${line.raw}`" class="runtime-line" :data-level="line.level">
             <span class="runtime-level">{{ line.level.toUpperCase() }}</span>
+            <span v-if="line.file" class="runtime-file">{{ line.file }}</span>
             <span class="runtime-message">{{ line.message }}</span>
           </div>
         </div>
@@ -114,6 +126,8 @@ const loading = ref(false)
 const runtimeFilters = reactive({
   source: 'api',
   lines: 200,
+  date: '',
+  hour: '',
   keyword: '',
 })
 
@@ -132,6 +146,7 @@ const operationFilters = reactive({
 const runtimeLogs = ref([])
 const deploymentLogs = ref([])
 const operationLogs = ref([])
+const runtimeHourOptions = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, '0'))
 
 function formatDate(value) {
   if (!value) return '-'
@@ -238,6 +253,12 @@ onMounted(() => {
   width: 48px;
   flex: 0 0 auto;
   color: #93c5fd;
+}
+
+.runtime-file {
+  width: 170px;
+  flex: 0 0 auto;
+  color: #9ca3af;
 }
 
 .runtime-message {

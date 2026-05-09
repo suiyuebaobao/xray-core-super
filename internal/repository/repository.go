@@ -5,6 +5,7 @@
 package repository
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -364,6 +366,7 @@ type RuntimeLogLine struct {
 	Level      string `json:"level"`
 	Message    string `json:"message"`
 	Raw        string `json:"raw"`
+	File       string `json:"file,omitempty"`
 }
 
 // RuntimeLogReader 读取宿主机日志文件。
@@ -375,61 +378,147 @@ func NewRuntimeLogReader(baseDir string) *RuntimeLogReader {
 	return &RuntimeLogReader{baseDir: baseDir}
 }
 
-func (r *RuntimeLogReader) Read(source RuntimeLogSource, lineCount int, keyword string) ([]RuntimeLogLine, error) {
+func (r *RuntimeLogReader) Read(source RuntimeLogSource, lineCount int, keyword, date, hour string) ([]RuntimeLogLine, error) {
 	if lineCount <= 0 {
 		lineCount = 100
 	}
 	if lineCount > 2000 {
 		lineCount = 2000
 	}
-	path, err := r.resolvePath(source)
+	paths, err := r.resolvePaths(source, date, hour)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []RuntimeLogLine{}, nil
+	type rawLine struct {
+		path string
+		line string
+	}
+	rawLines := make([]rawLine, 0, lineCount)
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	for _, path := range paths {
+		file, err := os.Open(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
 		}
-		return nil, err
-	}
-	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
-	if keyword != "" {
-		filtered := make([]string, 0, len(lines))
-		for _, line := range lines {
-			if strings.Contains(strings.ToLower(line), strings.ToLower(keyword)) {
-				filtered = append(filtered, line)
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if keyword != "" && !strings.Contains(strings.ToLower(line), keyword) {
+				continue
+			}
+			rawLines = append(rawLines, rawLine{path: path, line: line})
+			if len(rawLines) > lineCount {
+				rawLines = rawLines[len(rawLines)-lineCount:]
 			}
 		}
-		lines = filtered
-	}
-	if len(lines) > lineCount {
-		lines = lines[len(lines)-lineCount:]
-	}
-	result := make([]RuntimeLogLine, 0, len(lines))
-	for idx, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
+		if err := scanner.Err(); err != nil {
+			_ = file.Close()
+			return nil, err
 		}
+		_ = file.Close()
+	}
+	result := make([]RuntimeLogLine, 0, len(rawLines))
+	for idx, item := range rawLines {
 		result = append(result, RuntimeLogLine{
 			LineNumber: idx + 1,
-			Level:      detectLogLevel(line),
-			Message:    line,
-			Raw:        line,
+			Level:      detectLogLevel(item.line),
+			Message:    item.line,
+			Raw:        item.line,
+			File:       r.displayPath(item.path),
 		})
 	}
 	return result, nil
 }
 
-func (r *RuntimeLogReader) resolvePath(source RuntimeLogSource) (string, error) {
+func (r *RuntimeLogReader) resolvePaths(source RuntimeLogSource, date, hour string) ([]string, error) {
+	sourceName, err := runtimeLogSourceDir(source)
+	if err != nil {
+		return nil, err
+	}
+	date = strings.TrimSpace(date)
+	hour = strings.TrimSpace(hour)
+	if date != "" || hour != "" {
+		if date == "" {
+			date = time.Now().Format("2006-01-02")
+		}
+		normalizedDate, err := normalizeRuntimeLogDate(date)
+		if err != nil {
+			return nil, err
+		}
+		if hour != "" {
+			normalizedHour, err := normalizeRuntimeLogHour(hour)
+			if err != nil {
+				return nil, err
+			}
+			return []string{filepath.Join(r.baseDir, sourceName, normalizedDate, normalizedHour+".log")}, nil
+		}
+		paths, err := filepath.Glob(filepath.Join(r.baseDir, sourceName, normalizedDate, "*.log"))
+		if err != nil {
+			return nil, err
+		}
+		sort.Strings(paths)
+		return paths, nil
+	}
+
+	paths, err := filepath.Glob(filepath.Join(r.baseDir, sourceName, "*", "*.log"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	if len(paths) > 24 {
+		paths = paths[len(paths)-24:]
+	}
+	if len(paths) == 0 {
+		legacyPath := filepath.Join(r.baseDir, sourceName+".log")
+		if _, err := os.Stat(legacyPath); err == nil {
+			paths = append(paths, legacyPath)
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	return paths, nil
+}
+
+func runtimeLogSourceDir(source RuntimeLogSource) (string, error) {
 	switch source {
 	case RuntimeLogSourceAPI:
-		return filepath.Join(r.baseDir, "api.log"), nil
+		return "api", nil
 	case RuntimeLogSourceWorker:
-		return filepath.Join(r.baseDir, "worker.log"), nil
+		return "worker", nil
 	default:
 		return "", fmt.Errorf("unsupported runtime log source: %s", source)
 	}
+}
+
+func normalizeRuntimeLogDate(value string) (string, error) {
+	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+	if err != nil {
+		return "", fmt.Errorf("invalid runtime log date: %s", value)
+	}
+	return parsed.Format("2006-01-02"), nil
+}
+
+func normalizeRuntimeLogHour(value string) (string, error) {
+	hour, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || hour < 0 || hour > 23 {
+		return "", fmt.Errorf("invalid runtime log hour: %s", value)
+	}
+	return fmt.Sprintf("%02d", hour), nil
+}
+
+func (r *RuntimeLogReader) displayPath(path string) string {
+	rel, err := filepath.Rel(r.baseDir, path)
+	if err != nil {
+		return filepath.Base(path)
+	}
+	return filepath.ToSlash(rel)
 }
 
 func detectLogLevel(line string) string {
@@ -1543,8 +1632,11 @@ func NewNodeRepository(db *gorm.DB) *NodeRepository {
 // Create 创建节点。
 func (r *NodeRepository) Create(ctx context.Context, node *model.Node) (*model.Node, error) {
 	node.TrafficPool = model.NormalizeTrafficPool(node.TrafficPool)
+	if node.Transport == "xhttp" || node.OutboundType == model.NodeOutboundSocks5 {
+		node.Flow = ""
+	}
 	err := r.db.WithContext(ctx).Create(node).Error
-	if err == nil && node.Transport == "xhttp" && node.Flow != "" {
+	if err == nil && (node.Transport == "xhttp" || node.OutboundType == model.NodeOutboundSocks5) {
 		node.Flow = ""
 		err = r.db.WithContext(ctx).Model(node).Update("flow", "").Error
 	}
@@ -1585,6 +1677,9 @@ func (r *NodeRepository) BelongsToNodeHost(ctx context.Context, nodeID uint64, n
 // Update 更新节点。
 func (r *NodeRepository) Update(ctx context.Context, node *model.Node) error {
 	node.TrafficPool = model.NormalizeTrafficPool(node.TrafficPool)
+	if node.Transport == "xhttp" || node.OutboundType == model.NodeOutboundSocks5 {
+		node.Flow = ""
+	}
 	return r.db.WithContext(ctx).Save(node).Error
 }
 
@@ -2300,6 +2395,12 @@ type RedeemCodeRepository struct {
 	db *gorm.DB
 }
 
+// RedeemCodeWithPlan 是后台兑换码列表视图，直接携带套餐名。
+type RedeemCodeWithPlan struct {
+	model.RedeemCode
+	PlanName string `json:"plan_name"`
+}
+
 // NewRedeemCodeRepository 创建兑换码 Repository。
 func NewRedeemCodeRepository(db *gorm.DB) *RedeemCodeRepository {
 	return &RedeemCodeRepository{db: db}
@@ -2340,15 +2441,21 @@ func (r *RedeemCodeRepository) MarkUsed(ctx context.Context, codeID uint64, user
 }
 
 // List 分页查询兑换码列表。
-func (r *RedeemCodeRepository) List(ctx context.Context, page, size int) ([]model.RedeemCode, int64, error) {
-	var codes []model.RedeemCode
+func (r *RedeemCodeRepository) List(ctx context.Context, page, size int) ([]RedeemCodeWithPlan, int64, error) {
+	var codes []RedeemCodeWithPlan
 	var total int64
 
 	q := r.db.WithContext(ctx).Model(&model.RedeemCode{})
 	q.Count(&total)
 
 	offset := (page - 1) * size
-	err := q.Offset(offset).Limit(size).Order("created_at DESC").Find(&codes).Error
+	err := q.
+		Select("redeem_codes.*, COALESCE(plans.name, '') AS plan_name").
+		Joins("LEFT JOIN plans ON plans.id = redeem_codes.plan_id").
+		Offset(offset).
+		Limit(size).
+		Order("redeem_codes.created_at DESC").
+		Find(&codes).Error
 	return codes, total, err
 }
 

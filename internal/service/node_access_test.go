@@ -154,6 +154,40 @@ func TestNodeAccessService_TriggerOnSubscribe_XHTTPPayloadOmitsFlow(t *testing.T
 	assert.Equal(t, "default-user-uuid", payload["uuid"])
 }
 
+func TestNodeAccessService_TriggerOnSubscribe_Socks5PayloadOmitsFlow(t *testing.T) {
+	db, svc := setupNodeAccessTest(t)
+	ctx := context.Background()
+
+	nodeGroup := &model.NodeGroup{Name: "home-group"}
+	require.NoError(t, db.Create(nodeGroup).Error)
+	node := &model.Node{
+		Name: "home-node", Protocol: "vless", Transport: "tcp",
+		TrafficPool: model.TrafficPoolResidential, OutboundType: model.NodeOutboundSocks5,
+		Host: "home.node.test", Port: 24465, ServerName: "www.microsoft.com",
+		Flow: "xtls-rprx-vision", AgentBaseURL: "http://node:8080", AgentTokenHash: "hash",
+		NodeGroupID: &nodeGroup.ID, IsEnabled: true,
+	}
+	require.NoError(t, db.Create(node).Error)
+	plan := &model.Plan{Name: "home-plan", Price: 10, DurationDays: 30, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	require.NoError(t, db.Exec("INSERT INTO plan_node_groups (plan_id, node_group_id) VALUES (?, ?)", plan.ID, nodeGroup.ID).Error)
+	sub := &model.UserSubscription{
+		UserID: 1, PlanID: plan.ID, StartDate: db.NowFunc(),
+		ExpireDate: db.NowFunc().AddDate(0, 0, 30), Status: "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+
+	require.NoError(t, svc.TriggerOnSubscribe(ctx, 1, sub.ID, plan.ID))
+
+	var task model.NodeAccessTask
+	require.NoError(t, db.Where("node_id = ? AND action = ?", node.ID, "UPSERT_USER").First(&task).Error)
+	require.NotNil(t, task.Payload)
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*task.Payload), &payload))
+	assert.Equal(t, "tcp", payload["transport"])
+	assert.NotContains(t, payload, "flow")
+}
+
 // TestNodeAccessService_TriggerOnExpire 测试触发订阅过期任务。
 func TestNodeAccessService_TriggerOnExpire(t *testing.T) {
 	db, svc := setupNodeAccessTest(t)

@@ -134,6 +134,7 @@ func TestResponse_AllPredefinedErrors(t *testing.T) {
 		response.ErrUserExists,
 		response.ErrLoginFailed,
 		response.ErrSubscriptionExpire,
+		response.ErrSubscriptionNoNodes,
 		response.ErrOrderNotFound,
 	}
 

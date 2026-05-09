@@ -129,9 +129,9 @@ func NewRuntimeLogService(reader *repository.RuntimeLogReader) *RuntimeLogServic
 	return &RuntimeLogService{reader: reader}
 }
 
-func (s *RuntimeLogService) Read(ctx context.Context, source string, lineCount int, keyword string) ([]repository.RuntimeLogLine, error) {
+func (s *RuntimeLogService) Read(ctx context.Context, source string, lineCount int, keyword, date, hour string) ([]repository.RuntimeLogLine, error) {
 	if s == nil || s.reader == nil {
 		return nil, fmt.Errorf("runtime log reader is not configured")
 	}
-	return s.reader.Read(repository.RuntimeLogSource(source), lineCount, keyword)
+	return s.reader.Read(repository.RuntimeLogSource(source), lineCount, keyword, date, hour)
 }

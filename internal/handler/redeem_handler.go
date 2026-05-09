@@ -113,19 +113,16 @@ func (h *RedeemHandler) Redeem(c *gin.Context) {
 		}
 
 		// 2. 检查用户是否已有有效订阅
-		var activeSub *model.UserSubscription
-		if err := tx.Where("user_id = ? AND status = ? AND expire_date > ?", uid, "ACTIVE", now).
-			Order("expire_date DESC").First(&model.UserSubscription{}).Error; err != nil {
-			if err != gorm.ErrRecordNotFound {
-				return err
+		var activeSub model.UserSubscription
+		activeResult := tx.Where("user_id = ? AND status = ? AND expire_date > ?", uid, "ACTIVE", now).
+			Order("expire_date DESC").First(&activeSub)
+		if activeResult.Error != nil {
+			if activeResult.Error != gorm.ErrRecordNotFound {
+				return activeResult.Error
 			}
-		} else {
-			activeSub = &model.UserSubscription{}
-			tx.Where("user_id = ? AND status = ? AND expire_date > ?", uid, "ACTIVE", now).
-				Order("expire_date DESC").First(activeSub)
 		}
 
-		if activeSub != nil && activeSub.ID > 0 {
+		if activeSub.ID > 0 {
 			// 已有有效订阅，在原到期时间基础上延长并叠加流量
 			baseDate := activeSub.ExpireDate
 			if baseDate.Before(now) {
@@ -134,9 +131,10 @@ func (h *RedeemHandler) Redeem(c *gin.Context) {
 			newExpireDate := baseDate.AddDate(0, 0, int(code.DurationDays))
 			if err := tx.Model(&model.UserSubscription{}).Where("id = ?", activeSub.ID).
 				Updates(map[string]interface{}{
-					"expire_date":   newExpireDate,
-					"traffic_limit": gorm.Expr("traffic_limit + ?", plan.TrafficLimit),
-					"plan_id":       code.PlanID,
+					"expire_date":               newExpireDate,
+					"traffic_limit":             gorm.Expr("traffic_limit + ?", plan.TrafficLimit),
+					"residential_traffic_limit": gorm.Expr("residential_traffic_limit + ?", plan.ResidentialTrafficLimit),
+					"plan_id":                   code.PlanID,
 				}).Error; err != nil {
 				return err
 			}
@@ -146,14 +144,16 @@ func (h *RedeemHandler) Redeem(c *gin.Context) {
 		} else {
 			// 创建新订阅
 			newSub := &model.UserSubscription{
-				UserID:       uid,
-				PlanID:       code.PlanID,
-				StartDate:    now,
-				ExpireDate:   now.AddDate(0, 0, int(code.DurationDays)),
-				TrafficLimit: plan.TrafficLimit,
-				UsedTraffic:  0,
-				Status:       "ACTIVE",
-				ActiveUserID: &uid,
+				UserID:                  uid,
+				PlanID:                  code.PlanID,
+				StartDate:               now,
+				ExpireDate:              now.AddDate(0, 0, int(code.DurationDays)),
+				TrafficLimit:            plan.TrafficLimit,
+				UsedTraffic:             0,
+				ResidentialTrafficLimit: plan.ResidentialTrafficLimit,
+				ResidentialUsedTraffic:  0,
+				Status:                  "ACTIVE",
+				ActiveUserID:            &uid,
 			}
 			if err := tx.Create(newSub).Error; err != nil {
 				return err

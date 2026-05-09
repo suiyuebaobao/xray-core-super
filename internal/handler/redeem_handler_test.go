@@ -98,12 +98,13 @@ func TestRedeem_Success_NewSubscription(t *testing.T) {
 
 	// 创建套餐
 	plan := &model.Plan{
-		Name:         "测试套餐",
-		Price:        10.00,
-		Currency:     "USDT",
-		TrafficLimit: 10737418240, // 10GB
-		DurationDays: 30,
-		IsActive:     true,
+		Name:                    "测试套餐",
+		Price:                   10.00,
+		Currency:                "USDT",
+		TrafficLimit:            10737418240, // 10GB
+		ResidentialTrafficLimit: 5368709120,  // 5GB
+		DurationDays:            30,
+		IsActive:                true,
 	}
 	db.Create(plan)
 
@@ -159,6 +160,11 @@ func TestRedeem_Success_NewSubscription(t *testing.T) {
 	var subCount int64
 	db.Model(&model.UserSubscription{}).Where("user_id = ?", user.ID).Count(&subCount)
 	assert.Equal(t, int64(1), subCount)
+
+	var createdSub model.UserSubscription
+	db.Where("user_id = ?", user.ID).First(&createdSub)
+	assert.Equal(t, plan.TrafficLimit, createdSub.TrafficLimit)
+	assert.Equal(t, plan.ResidentialTrafficLimit, createdSub.ResidentialTrafficLimit)
 
 	// 验证兑换码已标记为已使用
 	var updatedCode model.RedeemCode
@@ -303,14 +309,24 @@ func TestRedeem_Renew_ExistingSubscription(t *testing.T) {
 	user := &model.User{UUID: "renew-u", Username: "renewuser", PasswordHash: "h", XrayUserKey: "renew@x", Status: "active"}
 	db.Create(user)
 
-	plan := &model.Plan{Name: "RenewPlan", Price: 20.0, Currency: "USDT", TrafficLimit: 5368709120, DurationDays: 30, IsActive: true}
+	plan := &model.Plan{
+		Name:                    "RenewPlan",
+		Price:                   20.0,
+		Currency:                "USDT",
+		TrafficLimit:            5368709120,
+		ResidentialTrafficLimit: 2684354560,
+		DurationDays:            30,
+		IsActive:                true,
+	}
 	db.Create(plan)
 
 	// 已有活跃订阅
 	existingSub := &model.UserSubscription{
 		UserID: user.ID, PlanID: 1, StartDate: time.Now(),
 		ExpireDate:   time.Now().AddDate(0, 0, 15),
-		TrafficLimit: 10737418240, UsedTraffic: 1000, Status: "ACTIVE",
+		TrafficLimit: 10737418240, UsedTraffic: 1000,
+		ResidentialTrafficLimit: 1073741824, ResidentialUsedTraffic: 512,
+		Status: "ACTIVE",
 	}
 	db.Create(existingSub)
 
@@ -351,6 +367,8 @@ func TestRedeem_Renew_ExistingSubscription(t *testing.T) {
 	var updatedSub model.UserSubscription
 	db.Where("user_id = ?", user.ID).First(&updatedSub)
 	assert.Greater(t, updatedSub.TrafficLimit, uint64(10737418240))
+	assert.Equal(t, uint64(1073741824)+plan.ResidentialTrafficLimit, updatedSub.ResidentialTrafficLimit)
+	assert.Equal(t, uint64(512), updatedSub.ResidentialUsedTraffic)
 }
 
 // TestRedeem_MissingCodeField 测试缺少 code 字段。
@@ -430,6 +448,43 @@ func TestAdminRedeemHandler_GenerateAndList(t *testing.T) {
 	json.Unmarshal(listW.Body.Bytes(), &listResp)
 	listData := listResp["data"].(map[string]interface{})
 	assert.Equal(t, float64(5), listData["total"])
+	listCodes := listData["codes"].([]interface{})
+	assert.Empty(t, listCodes[0].(map[string]interface{})["plan_name"])
+}
+
+func TestAdminRedeemHandler_List_IncludesPlanName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openRedeemTestDB(t)
+	db.AutoMigrate(&model.User{}, &model.RedeemCode{}, &model.Plan{})
+
+	cfg := &config.Config{JWTSecret: "admin-redeem-plan-secret", JWTExpiresIn: 24 * time.Hour}
+	redeemRepo := repository.NewRedeemCodeRepository(db)
+	adminHandler := handler.NewAdminRedeemHandler(redeemRepo)
+
+	r := gin.New()
+	r.Use(middleware.JWTAuth(cfg.JWTSecret))
+	r.GET("/api/admin/redeem-codes", adminHandler.List)
+
+	adminUser := &model.User{UUID: "admin-rp", Username: "adminrp", PasswordHash: "x", XrayUserKey: "arp@x", Status: "active", IsAdmin: true}
+	db.Create(adminUser)
+	token, _ := generateTestJWTToken(cfg, adminUser.ID, true)
+
+	plan := &model.Plan{Name: "Plan With Name", Price: 1, DurationDays: 30, IsActive: true}
+	db.Create(plan)
+	db.Create(&model.RedeemCode{Code: "PLANNAME001", PlanID: plan.ID, DurationDays: 30})
+
+	req := httptest.NewRequest("GET", "/api/admin/redeem-codes", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	codes := data["codes"].([]interface{})
+	assert.Equal(t, "Plan With Name", codes[0].(map[string]interface{})["plan_name"])
 }
 
 // TestRedeem_PlanNotFound 测试兑换码对应的套餐不存在。

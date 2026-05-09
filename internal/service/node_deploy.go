@@ -437,6 +437,9 @@ func applyDeployTransportOption(node *model.Node, option deployTransportOption) 
 		node.XHTTPHost = option.XHTTPHost
 		node.XHTTPMode = option.XHTTPMode
 	}
+	if node.OutboundType == model.NodeOutboundSocks5 {
+		node.Flow = ""
+	}
 }
 
 func normalizeTransport(transport string) string {

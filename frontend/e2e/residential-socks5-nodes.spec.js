@@ -163,13 +163,11 @@ test('multiple SOCKS5 upstreams create independent residential subscription line
       expect(node.outbound_type).toBe('socks5')
       expect([proxyA, proxyB]).toContain(node.outbound_proxy_url)
       expect(node.line_mode).toBe('direct_only')
+      expect(node.flow || '').toBe('')
       if (node.transport === 'xhttp') {
-        expect(node.flow || '').toBe('')
         expect(node.xhttp_path).toBe('/home-xhttp')
         expect(node.xhttp_mode).toBe('stream-up')
         expect(node.xhttp_host).toBe('cdn.example.test')
-      } else {
-        expect(node.flow).toBe('xtls-rprx-vision')
       }
     }
 
@@ -237,7 +235,7 @@ test('multiple SOCKS5 upstreams create independent residential subscription line
     expect(countOccurrences(plain, 'type=xhttp')).toBe(2)
     expect(plain).toContain('path=%2Fhome-xhttp')
     expect(plain).toContain('host=cdn.example.test')
-    expect(countOccurrences(plain, 'flow=xtls-rprx-vision')).toBe(2)
+    expect(countOccurrences(plain, 'flow=xtls-rprx-vision')).toBe(0)
 
     const clashResponse = await request.get(`/sub/${token}/clash`)
     expect(clashResponse.ok(), 'clash subscription download').toBeTruthy()
@@ -250,7 +248,7 @@ test('multiple SOCKS5 upstreams create independent residential subscription line
     expect(clash).toContain('xhttp-opts:')
     expect(clash).toContain('path: /home-xhttp')
     expect(clash).toContain('host: cdn.example.test')
-    expect(countOccurrences(clash, 'flow: xtls-rprx-vision')).toBe(2)
+    expect(countOccurrences(clash, 'flow: xtls-rprx-vision')).toBe(0)
 
     const exhausted = await api(request, adminToken, 'put', `/api/admin/users/${created.userId}/subscription`, {
       data: {

@@ -47,6 +47,8 @@ COPY --from=backend-builder /bin/worker /app/worker
 COPY --from=backend-builder /bin/seed /app/seed
 COPY --from=frontend-builder /web/static /app/web/static
 COPY migrations /app/migrations
+COPY deploy/scripts/hourly-log.sh /app/hourly-log.sh
+RUN chmod +x /app/hourly-log.sh
 
 EXPOSE 3000
 

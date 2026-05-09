@@ -127,6 +127,38 @@ func TestGenerator_ClashYAML_XHTTPProxyStructure(t *testing.T) {
 	assert.NotContains(t, uriContent, "flow=")
 }
 
+func TestGenerator_ClashYAML_Socks5ProxyOmitsFlow(t *testing.T) {
+	_, gen := setupSubTestDB(t)
+
+	nodes := []subscription.NodeConfig{
+		{
+			Name:         "Home-01",
+			Server:       "home.example.com",
+			Port:         24465,
+			UUID:         "uuid-home",
+			ServerName:   "www.microsoft.com",
+			PublicKey:    "home-pubkey",
+			ShortID:      "home-sid",
+			Fingerprint:  "chrome",
+			Transport:    "tcp",
+			OutboundType: "socks5",
+			Flow:         "xtls-rprx-vision",
+		},
+	}
+
+	yamlContent := gen.GenerateClashYAML(nodes)
+
+	var config map[string]interface{}
+	require.NoError(t, yaml.Unmarshal([]byte(yamlContent), &config))
+	proxy := config["proxies"].([]interface{})[0].(map[string]interface{})
+	assert.Equal(t, "tcp", proxy["network"])
+	assert.NotContains(t, proxy, "flow")
+
+	uriContent := gen.GeneratePlainURI(nodes)
+	assert.Contains(t, uriContent, "type=tcp")
+	assert.NotContains(t, uriContent, "flow=")
+}
+
 // TestGenerator_ClashYAML_MultipleNodes 测试多节点生成。
 func TestGenerator_ClashYAML_MultipleNodes(t *testing.T) {
 	_, gen := setupSubTestDB(t)

@@ -282,6 +282,9 @@ func nodeAccessTransportAndFlow(node model.Node) (string, string) {
 	if transport == "xhttp" {
 		return transport, ""
 	}
+	if strings.EqualFold(strings.TrimSpace(node.OutboundType), model.NodeOutboundSocks5) {
+		return transport, ""
+	}
 	flow := strings.TrimSpace(node.Flow)
 	if flow == "" {
 		flow = "xtls-rprx-vision"

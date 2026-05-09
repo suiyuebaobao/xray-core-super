@@ -136,6 +136,8 @@ Build the node-agent image used by one-click deployment:
 make node-agent-image
 ```
 
+This writes `deploy/artifacts/node-agent-image.tar.gz`, which Docker Compose mounts into the API container for one-click node and relay deployment.
+
 Capture sanitized product screenshots for README updates:
 
 ```bash

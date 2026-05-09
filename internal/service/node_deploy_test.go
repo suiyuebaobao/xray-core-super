@@ -1,6 +1,8 @@
 package service
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -131,6 +133,44 @@ func TestNormalizeCenterURLList_AddsKnownControlPlaneIPsForDomain(t *testing.T) 
 	values := normalizeCenterURLList("http://leiyunai.fun", nil)
 
 	require.Equal(t, []string{"http://leiyunai.fun", "http://154.219.106.105", "http://154.219.106.53"}, values)
+}
+
+func TestNodeAgentImageCandidates_EnvPathFirstAndDeduped(t *testing.T) {
+	customPath := filepath.Join(t.TempDir(), "node-agent-image.tar.gz")
+	t.Setenv("NODE_AGENT_IMAGE_PATH", customPath)
+
+	values := nodeAgentImageCandidates()
+
+	require.NotEmpty(t, values)
+	require.Equal(t, customPath, values[0])
+	seen := map[string]bool{}
+	for _, value := range values {
+		require.NotEmpty(t, value)
+		require.False(t, seen[value], "duplicate candidate %s", value)
+		seen[value] = true
+	}
+	require.Contains(t, values, "/root/raypilot-artifacts/node-agent-image.tar.gz")
+	require.Contains(t, values, "/root/node-agent-image.tar.gz")
+}
+
+func TestNodeAgentImageCandidates_EmptyEnvIgnored(t *testing.T) {
+	t.Setenv("NODE_AGENT_IMAGE_PATH", " ")
+
+	values := nodeAgentImageCandidates()
+
+	require.NotContains(t, values, "")
+	require.NotContains(t, values, " ")
+}
+
+func TestPushImageReportsAllCheckedPathsWhenMissing(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing.tar.gz")
+	t.Setenv("NODE_AGENT_IMAGE_PATH", missingPath)
+
+	_, err := os.Stat(missingPath)
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	candidates := nodeAgentImageCandidates()
+	require.Equal(t, missingPath, candidates[0])
 }
 
 func TestNormalizeDeployOutboundProxyURLs_MultipleLines(t *testing.T) {

@@ -46,6 +46,7 @@ services:
       - "3000"
     volumes:
       - ./logs:/app/logs
+      - ./deploy/artifacts:/root/raypilot-artifacts:ro
     depends_on:
       mysql:
         condition: service_healthy

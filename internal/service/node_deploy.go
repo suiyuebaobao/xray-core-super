@@ -1368,15 +1368,15 @@ func (s *NodeDeployService) checkContainerRunning(client *ssh.Client) (bool, err
 }
 
 func (s *NodeDeployService) pushImage(client *ssh.Client) error {
-	// 读取本地镜像文件
-	imagePath := "/root/node-agent-image.tar.gz"
-	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
-		// 尝试非压缩版本
-		imagePath = "/root/node-agent-image.tar"
+	imagePath := ""
+	for _, candidate := range nodeAgentImageCandidates() {
+		if _, err := os.Stat(candidate); err == nil {
+			imagePath = candidate
+			break
+		}
 	}
-	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
-		// 如果没有预置镜像，尝试从 Docker 导出
-		return fmt.Errorf("node-agent Docker image not found at %s, please run: make node-agent-image", imagePath)
+	if imagePath == "" {
+		return fmt.Errorf("node-agent Docker image not found, checked %s; please run: make node-agent-image", strings.Join(nodeAgentImageCandidates(), ", "))
 	}
 
 	data, err := os.ReadFile(imagePath)
@@ -1397,6 +1397,39 @@ func (s *NodeDeployService) pushImage(client *ssh.Client) error {
 	}
 
 	return nil
+}
+
+func nodeAgentImageCandidates() []string {
+	candidates := []string{}
+	if path := strings.TrimSpace(os.Getenv("NODE_AGENT_IMAGE_PATH")); path != "" {
+		candidates = append(candidates, path)
+	}
+	candidates = append(candidates,
+		"/root/raypilot-artifacts/node-agent-image.tar.gz",
+		"/root/raypilot-artifacts/node-agent-image.tar",
+		"/root/node-agent-image.tar.gz",
+		"/root/node-agent-image.tar",
+		"/app/deploy/artifacts/node-agent-image.tar.gz",
+		"/app/deploy/artifacts/node-agent-image.tar",
+	)
+	return uniqueStrings(candidates)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *NodeDeployService) cleanupLegacyNodeAgent(client *ssh.Client) error {

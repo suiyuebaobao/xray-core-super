@@ -24,6 +24,8 @@ check.out
 logs/
 *.log
 *.pid
+deploy/artifacts/*.tar
+deploy/artifacts/*.tar.gz
 
 frontend/node_modules/
 frontend/dist/

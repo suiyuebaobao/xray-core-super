@@ -58,8 +58,10 @@ docker:
 
 # 构建 node-agent 镜像并导出给一键部署使用
 node-agent-image:
+	mkdir -p deploy/artifacts
 	docker build -f cmd/node-agent/Dockerfile -t raypilot/node-agent:latest .
-	docker save raypilot/node-agent:latest | gzip > /root/node-agent-image.tar.gz
+	docker save raypilot/node-agent:latest | gzip > deploy/artifacts/node-agent-image.tar.gz
+	cp deploy/artifacts/node-agent-image.tar.gz /root/node-agent-image.tar.gz
 
 # 启动 Docker Compose
 up:

@@ -93,8 +93,14 @@ test('admin and user pages render against live API', async ({ page }) => {
   await page.goto('/admin/relays')
   await page.waitForLoadState('networkidle')
   await expect(page.getByRole('button', { name: '一键部署中转' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '修复中心' }).first()).toBeVisible()
-  await expect(page.getByText('管理后端').first()).toBeVisible()
+  const relayRows = page.locator('.admin-relays .el-table__body-wrapper tbody tr')
+  const relayRowCount = await relayRows.count()
+  if (relayRowCount > 0) {
+    await expect(page.getByRole('button', { name: '修复中心' }).first()).toBeVisible()
+    await expect(page.getByText('管理后端').first()).toBeVisible()
+  } else {
+    await expect(page.getByText('暂无数据').first()).toBeVisible()
+  }
   await page.getByRole('button', { name: '一键部署中转' }).click()
   const relayDeployDialog = page.locator('.el-dialog').filter({ hasText: '一键部署中转节点' })
   await expect(relayDeployDialog.locator('.el-form-item').filter({ hasText: '出口节点' })).toBeVisible()

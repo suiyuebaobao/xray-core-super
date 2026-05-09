@@ -155,7 +155,9 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 
 `154.219.106.105` 与 `154.219.106.53` 当前作为 RayPilot 管理系统入口和备用入口使用，不再作为测试节点服务器；不得对这台管理系统服务器执行节点清理、node-agent 部署或 Xray 改动，除非用户明确要求维护管理系统本身。
 
-**中转节点：154.219.97.219**
+当前生产库没有启用中的中转节点；`relays` 与 `relay_backends` 均为空。若后续重新启用中转，必须通过后台 API 一键部署并同步更新本节。
+
+**出口节点：154.219.97.219**
 
 | 项目 | 值 |
 |------|-----|
@@ -163,17 +165,15 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 | SSH 用户 | `root` |
 | SSH 密码 | `[REDACTED]` |
 | 系统 | Ubuntu 22.04, 2GB RAM, 30GB 磁盘 |
-| xray-core | v26.3.27（已安装） |
-| xray 配置 | `/usr/local/etc/xray/config.json` |
-| 当前角色 | 中转节点物理机（原出口已停用） |
-| 协议 | VLESS + Reality + TCP，原端口 443 |
+| 当前角色 | 出口节点物理机 |
+| node_host 记录 | `43` |
+| 逻辑节点 | `283`（TCP `443`）、`284`（XHTTP `8443`） |
+| node-agent | `raypilot-node-agent` Docker 容器，`AGENT_ROLE=multi_exit` |
+| 转发组件 | Xray 26.3.27 |
 | Reality SNI | `www.microsoft.com` |
 | Reality PublicKey | `Ptge2dO56Lr_sBjn1I05SVhxew3mq6tvGN5JxdG3Plg` |
-| node-agent | `raypilot-relay-agent` Docker 容器，`AGENT_ROLE=relay` |
-| relay 记录 | `55` |
-| 监听端口 | `24443 -> 156.238.231.16:443` |
 | 中心服务地址 | `[REDACTED]` |
-| Relay Token | `[REDACTED]` |
+| NodeHost Token | `[REDACTED]` |
 
 **出口节点：156.238.231.16**
 
@@ -183,17 +183,17 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 | SSH 用户 | `root` |
 | SSH 密码 | `[REDACTED]` |
 | 系统 | Ubuntu 22.04 |
-| 角色 | 出口节点 |
-| 节点记录 | `105` |
-| node-agent | `raypilot-node-agent` Docker 容器，单出口模式 |
+| 当前角色 | 出口节点物理机 |
+| node_host 记录 | `6` |
+| 逻辑节点 | `106`（TCP `443`）、`107`（XHTTP `8443`） |
+| node-agent | `raypilot-node-agent` Docker 容器，`AGENT_ROLE=multi_exit` |
 | 转发组件 | Xray 26.3.27 |
-| 监听端口 | `443/TCP` |
 | Reality SNI | `www.microsoft.com` |
 | Reality PublicKey | `ZyjLrHt4dl3mig1vqxvFT6un5UL12gwZQhQbguIUm08` |
 | 中心服务地址 | `[REDACTED]` |
-| Node Token | `[REDACTED]` |
+| NodeHost Token | `[REDACTED]` |
 
-部署方式：一台多出口服务器只保留一个 multi_exit node-agent；旧 systemd/relay agent 不得与当前出口角色并存。
+部署方式：一台物理服务器只保留一个当前角色的 node-agent；旧 systemd/relay agent 不得与当前出口角色并存。一键部署镜像包由 `make node-agent-image` 生成到 `deploy/artifacts/node-agent-image.tar.gz`，Docker Compose 会把 `deploy/artifacts` 挂载到 API 容器 `/root/raypilot-artifacts` 供部署接口使用。
 
 ## 提交与 PR 要求
 

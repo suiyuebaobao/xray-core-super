@@ -85,13 +85,13 @@ func TestNormalizeDeployTransportOptions_RejectsDuplicatePorts(t *testing.T) {
 
 func TestListenEndpointKey_AllowsSamePortOnDifferentIPs(t *testing.T) {
 	endpoints := map[string]struct{}{}
-	for _, ip := range []string{"154.219.97.219", "156.238.231.16"} {
+	for _, ip := range []string{"198.51.100.10", "198.51.100.20"} {
 		endpoints[listenEndpointKey(ip, 443)] = struct{}{}
 	}
 
 	require.Len(t, endpoints, 2)
-	require.Contains(t, endpoints, "154.219.97.219:443")
-	require.Contains(t, endpoints, "156.238.231.16:443")
+	require.Contains(t, endpoints, "198.51.100.10:443")
+	require.Contains(t, endpoints, "198.51.100.20:443")
 }
 
 func TestNormalizeDeployUint64IDs_DedupesAndSorts(t *testing.T) {
@@ -126,24 +126,26 @@ func TestNormalizeCenterURLList_DedupesPrimaryAndFallbacks(t *testing.T) {
 func TestNormalizeDeployCenterRequest_UsesFirstValidAsPrimary(t *testing.T) {
 	req := &DeployRequest{
 		CenterURL:  "not-a-url",
-		CenterURLs: []string{"http://leiyunai.fun/", "http://154.219.106.105/", "http://154.219.106.53"},
+		CenterURLs: []string{"http://center.example.com/", "http://203.0.113.10/", "http://203.0.113.11"},
 	}
 
 	require.NoError(t, normalizeDeployCenterRequest(req))
-	require.Equal(t, "http://leiyunai.fun", req.CenterURL)
-	require.Equal(t, []string{"http://154.219.106.105", "http://154.219.106.53"}, req.CenterURLs)
+	require.Equal(t, "http://center.example.com", req.CenterURL)
+	require.Equal(t, []string{"http://203.0.113.10", "http://203.0.113.11"}, req.CenterURLs)
 }
 
-func TestNormalizeCenterURLList_AddsKnownControlPlaneFallback(t *testing.T) {
-	values := normalizeCenterURLList("http://154.219.106.105", nil)
+func TestNormalizeCenterURLList_AddsConfiguredControlPlaneFallback(t *testing.T) {
+	t.Setenv("CENTER_SERVER_FALLBACK_URLS", "http://center.example.com,http://203.0.113.10,http://203.0.113.11")
 
-	require.Equal(t, []string{"http://154.219.106.105", "http://leiyunai.fun", "http://154.219.106.53"}, values)
+	values := normalizeCenterURLList("http://center.example.com", nil)
+
+	require.Equal(t, []string{"http://center.example.com", "http://203.0.113.10", "http://203.0.113.11"}, values)
 }
 
-func TestNormalizeCenterURLList_AddsKnownControlPlaneIPsForDomain(t *testing.T) {
-	values := normalizeCenterURLList("http://leiyunai.fun", nil)
+func TestNormalizeCenterURLList_DoesNotAddUnconfiguredFallback(t *testing.T) {
+	values := normalizeCenterURLList("http://center.example.com", nil)
 
-	require.Equal(t, []string{"http://leiyunai.fun", "http://154.219.106.105", "http://154.219.106.53"}, values)
+	require.Equal(t, []string{"http://center.example.com"}, values)
 }
 
 func TestNodeAgentImageCandidates_EnvPathFirstAndDeduped(t *testing.T) {
@@ -239,6 +241,17 @@ func TestDeployListenEndpointsForOptions_AllowsSamePortOnDifferentIPs(t *testing
 	require.Equal(t, "[203.0.113.10:443 203.0.113.11:443]", formatDeployListenEndpoints(endpoints))
 }
 
+func TestDeployPortsFromEndpoints_DedupesAndSorts(t *testing.T) {
+	ports := deployPortsFromEndpoints([]deployListenEndpoint{
+		{IP: "203.0.113.11", Port: 8443},
+		{IP: "203.0.113.10", Port: 443},
+		{IP: "203.0.113.12", Port: 8443},
+		{IP: "203.0.113.13", Port: 0},
+	})
+
+	require.Equal(t, []uint32{443, 8443}, ports)
+}
+
 func TestDeployEndpointAwkPattern_BindsSpecificIPOrWildcard(t *testing.T) {
 	require.Equal(t, `203\.0\.113\.10:443$`, deployEndpointAwkPattern("203.0.113.10", 443))
 	require.Equal(t, `(^|:|\\])443$`, deployEndpointAwkPattern("0.0.0.0", 443))
@@ -278,7 +291,7 @@ func TestNormalizeOptionalIPv4_AcceptsAutoAndIPv4(t *testing.T) {
 }
 
 func TestDeployProxyNodeName_WithMultipleProxyAndTransport(t *testing.T) {
-	name := deployProxyNodeName("美国家宽", "156.238.231.16", 1, 3, deployTransportOption{Transport: "xhttp"}, 2)
+	name := deployProxyNodeName("美国家宽", "198.51.100.20", 1, 3, deployTransportOption{Transport: "xhttp"}, 2)
 
 	require.Equal(t, "美国家宽-2-XHTTP", name)
 }

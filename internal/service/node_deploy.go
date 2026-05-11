@@ -177,30 +177,42 @@ func normalizeCenterURL(raw string) string {
 }
 
 func knownCenterFallbackURLs(raw string) []string {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	normalizedRaw := normalizeCenterURL(raw)
+	if normalizedRaw == "" {
 		return nil
 	}
-	var hostnames []string
-	switch strings.ToLower(parsed.Hostname()) {
-	case "leiyunai.fun":
-		hostnames = []string{"154.219.106.105", "154.219.106.53"}
-	case "154.219.106.105":
-		hostnames = []string{"leiyunai.fun", "154.219.106.53"}
-	case "154.219.106.53":
-		hostnames = []string{"leiyunai.fun", "154.219.106.105"}
-	default:
+
+	known := configuredCenterURLSet()
+	if len(known) == 0 {
 		return nil
 	}
-	result := make([]string, 0, len(hostnames))
-	for _, hostname := range hostnames {
-		clone := *parsed
-		clone.Host = replaceURLHostname(&clone, hostname)
-		if normalized := normalizeCenterURL(clone.String()); normalized != "" {
-			result = append(result, normalized)
+
+	if _, ok := known[normalizedRaw]; !ok {
+		return nil
+	}
+
+	result := make([]string, 0, len(known)-1)
+	for value := range known {
+		if value != normalizedRaw {
+			result = append(result, value)
 		}
 	}
+	sort.Strings(result)
 	return result
+}
+
+func configuredCenterURLSet() map[string]struct{} {
+	known := map[string]struct{}{}
+	for _, key := range []string{"CENTER_SERVER_FALLBACK_URLS", "CENTER_SERVER_URLS"} {
+		for _, item := range strings.FieldsFunc(os.Getenv(key), func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+		}) {
+			if normalized := normalizeCenterURL(item); normalized != "" {
+				known[normalized] = struct{}{}
+			}
+		}
+	}
+	return known
 }
 
 func replaceURLHostname(parsed *url.URL, hostname string) string {
@@ -618,6 +630,14 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 	}
 	addStep("检查端口占用", "success", "节点端口可用")
 
+	firewallPorts := deployPortsFromEndpoints(requestedEndpoints)
+	addStep("放行防火墙", "running", fmt.Sprintf("放行节点 TCP 端口 %v", firewallPorts))
+	if err := s.ensureFirewallPortsOpen(sshClient, firewallPorts); err != nil {
+		addStep("放行防火墙", "failed", err.Error())
+		return result, err
+	}
+	addStep("放行防火墙", "success", "节点端口已放行或目标机无受管防火墙")
+
 	nodeToken := strings.TrimSpace(req.NodeToken)
 	if nodeToken == "" {
 		token, err := secure.RandomHex(24)
@@ -899,6 +919,14 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 		return result, err
 	}
 	addStep("检查端口占用", "success", "节点端口可用")
+
+	firewallPorts := deployPortsFromEndpoints(requestedEndpoints)
+	addStep("放行防火墙", "running", fmt.Sprintf("放行节点 TCP 端口 %v", firewallPorts))
+	if err := s.ensureFirewallPortsOpen(sshClient, firewallPorts); err != nil {
+		addStep("放行防火墙", "failed", err.Error())
+		return result, err
+	}
+	addStep("放行防火墙", "success", "节点端口已放行或目标机无受管防火墙")
 
 	hostToken := strings.TrimSpace(req.NodeToken)
 	if hostToken == "" {
@@ -2083,6 +2111,14 @@ func deployListenEndpointsForPorts(ports []uint32) []deployListenEndpoint {
 	return uniqueDeployListenEndpoints(endpoints)
 }
 
+func deployPortsFromEndpoints(endpoints []deployListenEndpoint) []uint32 {
+	ports := make([]uint32, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		ports = append(ports, endpoint.Port)
+	}
+	return uniqueDeployPorts(ports)
+}
+
 func uniqueDeployListenEndpoints(values []deployListenEndpoint) []deployListenEndpoint {
 	seen := map[string]struct{}{}
 	result := make([]deployListenEndpoint, 0, len(values))
@@ -2137,6 +2173,52 @@ func (s *NodeDeployService) ensureEndpointsFree(client *ssh.Client, endpoints []
 	}
 	if len(busy) > 0 {
 		return fmt.Errorf("listen endpoints already in use: %s", strings.Join(busy, "; "))
+	}
+	return nil
+}
+
+func (s *NodeDeployService) ensureFirewallPortsOpen(client *ssh.Client, ports []uint32) error {
+	ports = uniqueDeployPorts(ports)
+	if len(ports) == 0 {
+		return nil
+	}
+
+	args := make([]string, 0, len(ports))
+	for _, port := range ports {
+		if port == 0 || port > 65535 {
+			return fmt.Errorf("invalid firewall port: %d", port)
+		}
+		args = append(args, fmt.Sprintf("%d", port))
+	}
+
+	cmd := fmt.Sprintf(`set -e
+ports="%s"
+changed=0
+if command -v ufw >/dev/null 2>&1; then
+	status="$(ufw status 2>/dev/null | head -1 || true)"
+	if echo "$status" | grep -qi 'Status: active'; then
+		for port in $ports; do
+			if ! ufw status 2>/dev/null | awk '{print $1}' | grep -Fx "${port}/tcp" >/dev/null 2>&1; then
+				ufw allow "${port}/tcp" >/dev/null
+				changed=1
+			fi
+		done
+	fi
+fi
+if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+	for port in $ports; do
+		if ! firewall-cmd --query-port="${port}/tcp" >/dev/null 2>&1; then
+			firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null
+			changed=1
+		fi
+	done
+	if [ "$changed" = "1" ]; then
+		firewall-cmd --reload >/dev/null
+	fi
+fi
+echo "firewall ports checked: $ports"`, strings.Join(args, " "))
+	if out, err := client.Exec(cmd); err != nil {
+		return fmt.Errorf("open firewall ports: %w, output: %s", err, strings.TrimSpace(out))
 	}
 	return nil
 }

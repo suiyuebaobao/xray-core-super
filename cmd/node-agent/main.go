@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -255,30 +256,42 @@ func normalizeCenterServerURL(raw string) string {
 }
 
 func knownCenterServerFallbackURLs(raw string) []string {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	normalizedRaw := normalizeCenterServerURL(raw)
+	if normalizedRaw == "" {
 		return nil
 	}
-	var hostnames []string
-	switch strings.ToLower(parsed.Hostname()) {
-	case "leiyunai.fun":
-		hostnames = []string{"154.219.106.105", "154.219.106.53"}
-	case "154.219.106.105":
-		hostnames = []string{"leiyunai.fun", "154.219.106.53"}
-	case "154.219.106.53":
-		hostnames = []string{"leiyunai.fun", "154.219.106.105"}
-	default:
+
+	known := configuredCenterServerURLSet()
+	if len(known) == 0 {
 		return nil
 	}
-	result := make([]string, 0, len(hostnames))
-	for _, hostname := range hostnames {
-		clone := *parsed
-		clone.Host = replaceURLHostname(&clone, hostname)
-		if normalized := normalizeCenterServerURL(clone.String()); normalized != "" {
-			result = append(result, normalized)
+
+	if _, ok := known[normalizedRaw]; !ok {
+		return nil
+	}
+
+	result := make([]string, 0, len(known)-1)
+	for value := range known {
+		if value != normalizedRaw {
+			result = append(result, value)
 		}
 	}
+	sort.Strings(result)
 	return result
+}
+
+func configuredCenterServerURLSet() map[string]struct{} {
+	known := map[string]struct{}{}
+	for _, key := range []string{"CENTER_SERVER_FALLBACK_URLS", "CENTER_SERVER_URLS"} {
+		for _, item := range strings.FieldsFunc(os.Getenv(key), func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+		}) {
+			if normalized := normalizeCenterServerURL(item); normalized != "" {
+				known[normalized] = struct{}{}
+			}
+		}
+	}
+	return known
 }
 
 func replaceURLHostname(parsed *url.URL, hostname string) string {

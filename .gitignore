@@ -26,6 +26,8 @@ logs/
 *.pid
 deploy/artifacts/*.tar
 deploy/artifacts/*.tar.gz
+测试用例.md
+*测试用例*.md
 
 frontend/node_modules/
 frontend/dist/

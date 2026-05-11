@@ -282,7 +282,7 @@
       <el-form :model="deployForm" :rules="deployRules" ref="deployFormRef" label-width="120px">
         <el-alert :title="deployForm.multi_ip_enabled ? '多 IP 模式会先扫描出口 IP，勾选确认后才会创建多个逻辑节点' : '部署成功后会自动创建节点记录并刷新列表'" type="info" :closable="false" style="margin-bottom: 16px" />
         <el-form-item label="服务器 IP" prop="ssh_host">
-          <el-input v-model="deployForm.ssh_host" placeholder="例如：154.219.97.219" />
+          <el-input v-model="deployForm.ssh_host" placeholder="例如：198.51.100.10" />
         </el-form-item>
         <el-form-item label="SSH 端口" prop="ssh_port">
           <el-input-number v-model="deployForm.ssh_port" :min="1" :max="65535" />
@@ -297,7 +297,7 @@
           <el-input v-model="deployForm.node_name" placeholder="可选，默认为 raypilot-node-IP" />
         </el-form-item>
         <el-form-item label="中心服务地址" prop="center_url">
-          <el-input v-model="deployForm.center_url" placeholder="例如：http://leiyunai.fun" />
+          <el-input v-model="deployForm.center_url" placeholder="例如：https://center.example.com" />
         </el-form-item>
         <el-form-item label="备用中心地址">
           <el-input
@@ -538,7 +538,7 @@
           <el-input v-model="repairForm.ssh_password" type="password" show-password />
         </el-form-item>
         <el-form-item label="主中心地址" prop="center_url">
-          <el-input v-model="repairForm.center_url" placeholder="例如：http://leiyunai.fun" />
+          <el-input v-model="repairForm.center_url" placeholder="例如：https://center.example.com" />
         </el-form-item>
         <el-form-item label="备用中心地址">
           <el-input
@@ -1356,17 +1356,11 @@ function defaultBackupCenterURLsText() {
 }
 
 function defaultCenterFallbacks(currentURL) {
-  const fallbackHostsByCurrent = {
-    'leiyunai.fun': ['154.219.106.105', '154.219.106.53'],
-    '154.219.106.105': ['leiyunai.fun', '154.219.106.53'],
-    '154.219.106.53': ['leiyunai.fun', '154.219.106.105'],
-  }
-  const fallbackHosts = fallbackHostsByCurrent[currentURL.hostname] || []
-  return fallbackHosts.map((host) => {
-    const copy = new URL(currentURL.toString())
-    copy.hostname = host
-    return copy.toString().replace(/\/$/, '')
-  }).join('\n')
+  return String(import.meta.env.VITE_CENTER_FALLBACK_URLS || '')
+    .split(/[\s,]+/)
+    .map((value) => value.trim())
+    .filter((value) => value && value !== currentURL.toString().replace(/\/$/, ''))
+    .join('\n')
 }
 
 async function handleRepairCenter() {

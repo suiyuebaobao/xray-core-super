@@ -1054,7 +1054,7 @@ async function main() {
 
     await page.goto('/admin/nodes')
     await page.getByRole('button', { name: '一键部署' }).click()
-    await page.getByPlaceholder('例如：154.219.97.219').fill('203.0.113.10')
+    await page.getByPlaceholder('例如：198.51.100.10').fill('203.0.113.10')
     await page.locator('.el-dialog input[type="password"]').fill('demo-password')
     await page.locator('.el-dialog .el-select').filter({ hasText: 'TCP + Reality' }).click()
     await page.locator('.el-select-dropdown:visible .el-select-dropdown__item').filter({ hasText: 'XHTTP + Reality' }).click()
@@ -1083,7 +1083,7 @@ async function main() {
     await page.goto('/admin/relays')
     await page.getByRole('button', { name: '一键部署中转' }).click()
     const relayDeployDialog = page.locator('.el-dialog').filter({ hasText: '一键部署中转节点' })
-    await relayDeployDialog.getByPlaceholder('例如：154.219.97.219').fill('198.51.100.20')
+    await relayDeployDialog.getByPlaceholder('例如：198.51.100.10').fill('198.51.100.20')
     await relayDeployDialog.locator('input[type="password"]').fill('demo-password')
     await relayDeployDialog.locator('.el-form-item').filter({ hasText: '中转名称' }).getByRole('textbox').fill('香港-转-美国')
     await relayDeployDialog.locator('.el-form-item').filter({ hasText: '出口节点' }).locator('.el-select').click()

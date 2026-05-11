@@ -191,6 +191,13 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 			return result, err
 		}
 		addStep("检查端口占用", "success", "中转监听端口可用")
+
+		addStep("放行防火墙", "running", fmt.Sprintf("放行中转 TCP 端口 %v", relayListenPorts))
+		if err := nodeDeployHelper.ensureFirewallPortsOpen(sshClient, relayListenPorts); err != nil {
+			addStep("放行防火墙", "failed", err.Error())
+			return result, err
+		}
+		addStep("放行防火墙", "success", "中转端口已放行或目标机无受管防火墙")
 	}
 
 	relayToken := strings.TrimSpace(req.RelayToken)

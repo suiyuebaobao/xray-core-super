@@ -28,19 +28,21 @@ func TestParseCenterServerURLs_DedupesAndNormalizes(t *testing.T) {
 	}
 }
 
-func TestParseCenterServerURLs_AddsKnownFallback(t *testing.T) {
-	urls := parseCenterServerURLs("", "http://154.219.106.105")
+func TestParseCenterServerURLs_AddsConfiguredFallback(t *testing.T) {
+	t.Setenv("CENTER_SERVER_FALLBACK_URLS", "http://center.example.com,http://203.0.113.10,http://203.0.113.11")
 
-	want := []string{"http://154.219.106.105", "http://leiyunai.fun", "http://154.219.106.53"}
+	urls := parseCenterServerURLs("", "http://center.example.com")
+
+	want := []string{"http://center.example.com", "http://203.0.113.10", "http://203.0.113.11"}
 	if strings.Join(urls, ",") != strings.Join(want, ",") {
 		t.Fatalf("urls = %#v, want %#v", urls, want)
 	}
 }
 
-func TestParseCenterServerURLs_AddsKnownIPsForDomain(t *testing.T) {
-	urls := parseCenterServerURLs("", "http://leiyunai.fun")
+func TestParseCenterServerURLs_DoesNotAddUnconfiguredFallback(t *testing.T) {
+	urls := parseCenterServerURLs("", "http://center.example.com")
 
-	want := []string{"http://leiyunai.fun", "http://154.219.106.105", "http://154.219.106.53"}
+	want := []string{"http://center.example.com"}
 	if strings.Join(urls, ",") != strings.Join(want, ",") {
 		t.Fatalf("urls = %#v, want %#v", urls, want)
 	}
@@ -95,7 +97,7 @@ func TestBuildHAProxyConfig_IncludesStatsSocketAndRelayBackend(t *testing.T) {
 			ID:         7,
 			ExitNodeID: 1,
 			ListenPort: 24443,
-			TargetHost: "154.219.97.219",
+			TargetHost: "198.51.100.10",
 			TargetPort: 443,
 			IsEnabled:  true,
 		},
@@ -111,7 +113,7 @@ func TestBuildHAProxyConfig_IncludesStatsSocketAndRelayBackend(t *testing.T) {
 		"stats socket /tmp/test-haproxy.sock mode 600 level admin",
 		"frontend relay_7_24443",
 		"bind *:24443",
-		"server exit_1 154.219.97.219:443 check",
+		"server exit_1 198.51.100.10:443 check",
 	} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("config missing %q:\n%s", want, config)
@@ -216,7 +218,7 @@ func TestBuildMultiExitXrayConfigMap_BindsListenAndSendThroughPerNode(t *testing
 	cfg := buildMultiExitXrayConfigMap([]MultiExitNodeConfig{
 		{
 			NodeID:            1,
-			IP:                "154.219.106.105",
+			IP:                "203.0.113.10",
 			Port:              443,
 			InboundTag:        "node_1_in",
 			OutboundTag:       "node_1_out",
@@ -224,7 +226,7 @@ func TestBuildMultiExitXrayConfigMap_BindsListenAndSendThroughPerNode(t *testing
 		},
 		{
 			NodeID:            2,
-			IP:                "154.219.106.106",
+			IP:                "203.0.113.12",
 			Port:              443,
 			InboundTag:        "node_2_in",
 			OutboundTag:       "node_2_out",
@@ -247,19 +249,19 @@ func TestBuildMultiExitXrayConfigMap_BindsListenAndSendThroughPerNode(t *testing
 	}
 	outbounds := cfg["outbounds"].([]interface{})
 	node1Out := outbounds[1].(map[string]interface{})
-	if node1Out["tag"] != "node_1_out" || node1Out["sendThrough"] != "154.219.106.105" {
-		t.Fatalf("node 1 outbound = %#v, want sendThrough 154.219.106.105", node1Out)
+	if node1Out["tag"] != "node_1_out" || node1Out["sendThrough"] != "203.0.113.10" {
+		t.Fatalf("node 1 outbound = %#v, want sendThrough 203.0.113.10", node1Out)
 	}
 	node2Out := outbounds[2].(map[string]interface{})
-	if node2Out["tag"] != "node_2_out" || node2Out["sendThrough"] != "154.219.106.106" {
-		t.Fatalf("node 2 outbound = %#v, want sendThrough 154.219.106.106", node2Out)
+	if node2Out["tag"] != "node_2_out" || node2Out["sendThrough"] != "203.0.113.12" {
+		t.Fatalf("node 2 outbound = %#v, want sendThrough 203.0.113.12", node2Out)
 	}
 }
 
 func TestLoadMultiNodeConfig_AllowsSameIPWithDifferentPorts(t *testing.T) {
 	t.Setenv("MULTI_NODE_CONFIG", `[
-		{"node_id": 1, "ip": "154.219.106.105", "port": 443, "transport": "tcp"},
-		{"node_id": 2, "ip": "154.219.106.105", "port": 8443, "transport": "xhttp", "xhttp_path": "raypilot"}
+		{"node_id": 1, "ip": "203.0.113.10", "port": 443, "transport": "tcp"},
+		{"node_id": 2, "ip": "203.0.113.10", "port": 8443, "transport": "xhttp", "xhttp_path": "raypilot"}
 	]`)
 	t.Setenv("MULTI_NODE_CONFIG_PATH", "")
 
@@ -280,8 +282,8 @@ func TestLoadMultiNodeConfig_AllowsSameIPWithDifferentPorts(t *testing.T) {
 
 func TestLoadMultiNodeConfig_AllowsDifferentIPsWithSamePort(t *testing.T) {
 	t.Setenv("MULTI_NODE_CONFIG", `[
-		{"node_id": 1, "ip": "154.219.106.105", "port": 443, "transport": "tcp"},
-		{"node_id": 2, "ip": "154.219.106.106", "port": 443, "transport": "tcp"}
+		{"node_id": 1, "ip": "203.0.113.10", "port": 443, "transport": "tcp"},
+		{"node_id": 2, "ip": "203.0.113.12", "port": 443, "transport": "tcp"}
 	]`)
 	t.Setenv("MULTI_NODE_CONFIG_PATH", "")
 
@@ -320,7 +322,7 @@ func TestBuildMultiExitXrayConfigMap_XHTTPStreamSettings(t *testing.T) {
 	cfg := buildMultiExitXrayConfigMap([]MultiExitNodeConfig{
 		{
 			NodeID:      3,
-			IP:          "154.219.106.105",
+			IP:          "203.0.113.10",
 			Port:        443,
 			Transport:   "xhttp",
 			XHTTPPath:   "raypilot-xhttp",
@@ -356,7 +358,7 @@ func TestBuildMultiExitXrayConfigMap_Socks5Outbound(t *testing.T) {
 	cfg := buildMultiExitXrayConfigMap([]MultiExitNodeConfig{
 		{
 			NodeID:            150,
-			IP:                "156.238.231.16",
+			IP:                "198.51.100.20",
 			Port:              24465,
 			Transport:         "tcp",
 			OutboundType:      "socks5",
@@ -424,7 +426,7 @@ func TestHandleMultiUpsertUser_ExplicitTCPWithoutFlowOmitsFlow(t *testing.T) {
 	cfg := buildMultiExitXrayConfigMap([]MultiExitNodeConfig{
 		{
 			NodeID:            150,
-			IP:                "156.238.231.16",
+			IP:                "198.51.100.20",
 			Port:              24465,
 			Transport:         "tcp",
 			OutboundType:      "socks5",
@@ -559,7 +561,7 @@ func TestHandleDisableUser_RemovesTrafficStateAndQueuedItems(t *testing.T) {
 func TestHandleMultiDisableUser_RemovesLocalTrafficState(t *testing.T) {
 	configPath := writeAgentTestXrayConfig(t, buildMultiExitXrayConfigMap([]MultiExitNodeConfig{{
 		NodeID:            150,
-		IP:                "156.238.231.16",
+		IP:                "198.51.100.20",
 		Port:              443,
 		InboundTag:        "node_150_in",
 		OutboundTag:       "node_150_out",

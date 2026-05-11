@@ -128,7 +128,7 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 
 - node-agent 必须支持多个中心入口：`CENTER_SERVER_URL` 保留为主入口，`CENTER_SERVER_URLS` 为逗号、空格或换行分隔的完整 http/https 地址列表；新部署必须同时写入两者。
 - node-agent 对所有中心请求必须从当前可用入口开始尝试，失败后轮询备用入口；某个入口请求成功后必须记住为当前 active center。
-- 一键部署出口节点和中转节点必须提供“备用中心地址”输入，并把主中心和备用中心归一化写入 agent 容器环境变量；当前控制面主域名为 `leiyunai.fun`，备用 IP 为 `154.219.106.105`、`154.219.106.53`，后端在任一入口出现时自动补齐另外两个入口。
+- 一键部署出口节点和中转节点必须提供“备用中心地址”输入，并把主中心和备用中心归一化写入 agent 容器环境变量；生产主/备中心入口通过未提交的环境变量配置，公开仓库不得写真实域名或 IP。后端可根据环境变量中的入口集合自动补齐主备地址。
 - 控制平台迁移或域名/IP 不可用时，优先依赖 agent 多中心自动切换；最后兜底才由管理员通过后台“修复中心”发起中心 SSH 到节点机器，重建 Docker agent 或更新 systemd drop-in 并重启 agent。
 - SSH 兜底接口为 `POST /api/admin/nodes/repair-center`，可指定 `node_id`、`node_host_id` 或 `relay_id` 等待新心跳确认；该接口只能保存脱敏部署日志，不得记录 SSH 密码、完整 Token 或私钥。
 - 修改 `CENTER_SERVER_URLS`、一键部署中心地址、SSH 兜底修复脚本或 agent 中心切换逻辑时，必须同步更新三份规则文件、`开发方案.md`、节点代理部署指南、管理接口文档、运维手册和页面清单，并运行 `go test ./...`、前端构建、Compose 配置校验和 Playwright smoke。
@@ -152,67 +152,13 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 
 ## 测试节点信息
 
-已有多台真实节点服务器用于联调测试。三份规则文件必须同步维护本节；SSH 密码、节点 Token、订阅 Token、JWT、数据库连接串和 Reality 私钥不得提交到 GitHub，公开仓库只保留 `[REDACTED]`。
+真实节点、控制面入口、备用入口、节点 ID、Reality 公钥、SSH 账号和 Token 属于生产敏感信息，不得提交到 GitHub。公开仓库只允许使用 `[REDACTED]`、`<primary-center-url>`、`<fallback-center-url>`、`<exit-node-ip>` 等占位符描述流程。
 
-`154.219.106.105` 与 `154.219.106.53` 当前作为 RayPilot 管理系统入口和备用入口使用，不再作为测试节点服务器；不得对这台管理系统服务器执行节点清理、node-agent 部署或 Xray 改动，除非用户明确要求维护管理系统本身。
+三份规则文件必须同步维护本节。若需要真实联调信息，应保存在未提交的本地运维密钥文件或密码管理器中；不得写入 `AGENTS.md`、`CLAUDE.md`、`QWEN.md`、`CHANGELOG.md`、`开发方案.md`、`文档/` 或截图。
 
-当前生产库没有启用中的中转节点；`relays` 与 `relay_backends` 均为空。若后续重新启用中转，必须通过后台 API 一键部署并同步更新本节。
+当前生产库没有启用中的中转节点；`relays` 与 `relay_backends` 均为空。若后续重新启用中转，必须通过后台 API 一键部署，并只在私有运维记录中维护真实服务器信息。
 
-**出口节点：154.219.97.219**
-
-| 项目 | 值 |
-|------|-----|
-| 节点 IP | `154.219.97.219` |
-| SSH 用户 | `root` |
-| SSH 密码 | `[REDACTED]` |
-| 系统 | Ubuntu 22.04, 2GB RAM, 30GB 磁盘 |
-| 当前角色 | 出口节点物理机 |
-| node_host 记录 | `43` |
-| 逻辑节点 | `283`（TCP `443`）、`284`（XHTTP `8443`） |
-| node-agent | `raypilot-node-agent` Docker 容器，`AGENT_ROLE=multi_exit` |
-| 转发组件 | Xray 26.3.27 |
-| Reality SNI | `www.microsoft.com` |
-| Reality PublicKey | `Ptge2dO56Lr_sBjn1I05SVhxew3mq6tvGN5JxdG3Plg` |
-| 中心服务地址 | `[REDACTED]` |
-| NodeHost Token | `[REDACTED]` |
-
-**出口节点：156.238.231.16**
-
-| 项目 | 值 |
-|------|-----|
-| 节点 IP | `156.238.231.16` |
-| SSH 用户 | `root` |
-| SSH 密码 | `[REDACTED]` |
-| 系统 | Ubuntu 22.04 |
-| 当前角色 | 出口节点物理机 |
-| node_host 记录 | `6` |
-| 逻辑节点 | `106`（TCP `443`）、`107`（XHTTP `8443`） |
-| node-agent | `raypilot-node-agent` Docker 容器，`AGENT_ROLE=multi_exit` |
-| 转发组件 | Xray 26.3.27 |
-| Reality SNI | `www.microsoft.com` |
-| Reality PublicKey | `ZyjLrHt4dl3mig1vqxvFT6un5UL12gwZQhQbguIUm08` |
-| 中心服务地址 | `[REDACTED]` |
-| NodeHost Token | `[REDACTED]` |
-
-**出口节点：156.238.231.216**
-
-| 项目 | 值 |
-|------|-----|
-| 节点 IP | `156.238.231.216` |
-| SSH 用户 | `root` |
-| SSH 密码 | `[REDACTED]` |
-| 系统 | Ubuntu 24.04.1 LTS |
-| 当前角色 | 出口节点物理机 |
-| node_host 记录 | `56` |
-| 逻辑节点 | `329`（TCP `443`，名称 `80M美国`）、`330`（XHTTP `8443`，名称 `80M美国-XHTTP`） |
-| node-agent | `raypilot-node-agent` Docker 容器，`AGENT_ROLE=multi_exit` |
-| 转发组件 | Xray 26.3.27 |
-| Reality SNI | `www.microsoft.com` |
-| Reality PublicKey | `bFylr-cqSFP-87MwmPTUL_BcswibHzK1aLSCVQ-AXQU` |
-| 中心服务地址 | `[REDACTED]` |
-| NodeHost Token | `[REDACTED]` |
-
-部署方式：一台物理服务器只保留一个当前角色的 node-agent；旧 systemd/relay agent 不得与当前出口角色并存。一键部署镜像包由 `make node-agent-image` 生成到 `deploy/artifacts/node-agent-image.tar.gz`，Docker Compose 会把 `deploy/artifacts` 挂载到 API 容器 `/root/raypilot-artifacts` 供部署接口使用。一键部署必须以 Docker 容器闭环成功为准：部署前做镜像包和目标服务器预检，清理旧角色后必须检查本次节点/中转端口没有被 nginx、宝塔或其他进程占用；部署中等待 Docker 可用、容器持续运行、Xray/HAProxy 配置生成、agent 心跳回连，并确认节点端口由 `xray` 监听、中转端口由 `haproxy` 监听，不能只用“端口有人监听”当成功；失败时必须采集容器日志和端口诊断，并清理本次创建的容器、节点/中转记录、后端绑定和配置任务。单出口部署必须向容器写入 `NODE_PORT`，node-agent 生成 Xray 配置时按后台端口监听，不能固定 443。部署前必须清理旧 Xray/HAProxy 配置，避免脏服务器复用旧配置。
+部署方式：一台物理服务器只保留一个当前角色的 node-agent；旧 systemd/relay agent 不得与当前出口角色并存。一键部署镜像包由 `make node-agent-image` 生成到 `deploy/artifacts/node-agent-image.tar.gz`，Docker Compose 会把 `deploy/artifacts` 挂载到 API 容器 `/root/raypilot-artifacts` 供部署接口使用。一键部署必须以 Docker 容器闭环成功为准：部署前做镜像包和目标服务器预检，清理旧角色后必须检查本次节点/中转端口没有被 nginx、宝塔或其他进程占用，并自动放行目标机 UFW/firewalld 上的节点或中转 TCP 端口；部署中等待 Docker 可用、容器持续运行、Xray/HAProxy 配置生成、agent 心跳回连，并确认节点端口由 `xray` 监听、中转端口由 `haproxy` 监听，不能只用“端口有人监听”当成功；失败时必须采集容器日志和端口诊断，并清理本次创建的容器、节点/中转记录、后端绑定和配置任务。单出口部署必须向容器写入 `NODE_PORT`，node-agent 生成 Xray 配置时按后台端口监听，不能固定 443。部署前必须清理旧 Xray/HAProxy 配置，避免脏服务器复用旧配置。若云厂商安全组另有入站限制，仍需在云侧放行 TCP 443、8443 或自定义监听端口。
 
 ## 提交与 PR 要求
 

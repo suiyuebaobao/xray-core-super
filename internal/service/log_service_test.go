@@ -69,13 +69,13 @@ func TestDeploymentLogService_Record_PersistsSteps(t *testing.T) {
 		UserID:   ptrUint64(1),
 		Username: ptrString("admin"),
 		ClientIP: ptrString("127.0.0.1"),
-	}, "exit_deploy", "156.238.231.16", "exit", "success", map[string]interface{}{"transport": []string{"tcp", "xhttp"}}, 1500*time.Millisecond, ptrUint64(105), []uint64{105, 106}, ptrUint64(9), nil, nil, []service.Step{
+	}, "exit_deploy", "198.51.100.20", "exit", "success", map[string]interface{}{"transport": []string{"tcp", "xhttp"}}, 1500*time.Millisecond, ptrUint64(105), []uint64{105, 106}, ptrUint64(9), nil, nil, []service.Step{
 		{Name: "create_records", Status: "success", Message: "created logical nodes"},
 		{Name: "sync_users", Status: "success", Message: "queued active users"},
 	}, nil)
 	require.NoError(t, err)
 
-	logs, total, err := svc.List(context.Background(), 1, 20, "exit_deploy", "success", "156.238.231.16")
+	logs, total, err := svc.List(context.Background(), 1, 20, "exit_deploy", "success", "198.51.100.20")
 	require.NoError(t, err)
 	require.Equal(t, int64(1), total)
 	require.Len(t, logs, 1)

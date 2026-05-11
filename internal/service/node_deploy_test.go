@@ -182,6 +182,72 @@ func TestPushImageReportsAllCheckedPathsWhenMissing(t *testing.T) {
 
 	candidates := nodeAgentImageCandidates()
 	require.Equal(t, missingPath, candidates[0])
+
+	_, _, err = locateNodeAgentImage()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), missingPath)
+	require.Contains(t, err.Error(), "make node-agent-image")
+}
+
+func TestLocateNodeAgentImage_RejectsEmptyFile(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "empty.tar.gz")
+	require.NoError(t, os.WriteFile(imagePath, nil, 0644))
+	t.Setenv("NODE_AGENT_IMAGE_PATH", imagePath)
+
+	_, _, err := locateNodeAgentImage()
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "is empty")
+}
+
+func TestLocateNodeAgentImage_FindsEnvPath(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "node-agent-image.tar.gz")
+	require.NoError(t, os.WriteFile(imagePath, []byte("fake-image"), 0644))
+	t.Setenv("NODE_AGENT_IMAGE_PATH", imagePath)
+
+	path, size, err := locateNodeAgentImage()
+
+	require.NoError(t, err)
+	require.Equal(t, imagePath, path)
+	require.EqualValues(t, len("fake-image"), size)
+}
+
+func TestUniqueDeployPorts_DedupesAndSorts(t *testing.T) {
+	ports := uniqueDeployPorts([]uint32{8443, 0, 443, 8443, 2053})
+
+	require.Equal(t, []uint32{443, 2053, 8443}, ports)
+}
+
+func TestDeployPortsForOptions_IncludesProxyOffsets(t *testing.T) {
+	ports := deployPortsForOptions([]deployTransportOption{
+		{Transport: "tcp", Port: 443},
+		{Transport: "xhttp", Port: 8443},
+	}, 3)
+
+	require.Equal(t, []uint32{443, 444, 445, 8443, 8444, 8445}, ports)
+}
+
+func TestDeployListenEndpointsForOptions_AllowsSamePortOnDifferentIPs(t *testing.T) {
+	endpoints := deployListenEndpointsForOptions([]string{"203.0.113.10", "203.0.113.11"}, true, []deployTransportOption{
+		{Transport: "tcp", Port: 443},
+	}, 1)
+
+	require.Equal(t, []deployListenEndpoint{
+		{IP: "203.0.113.10", Port: 443},
+		{IP: "203.0.113.11", Port: 443},
+	}, endpoints)
+	require.Equal(t, "[203.0.113.10:443 203.0.113.11:443]", formatDeployListenEndpoints(endpoints))
+}
+
+func TestDeployEndpointAwkPattern_BindsSpecificIPOrWildcard(t *testing.T) {
+	require.Equal(t, `203\.0\.113\.10:443$`, deployEndpointAwkPattern("203.0.113.10", 443))
+	require.Equal(t, `(^|:|\\])443$`, deployEndpointAwkPattern("0.0.0.0", 443))
+	require.Equal(t, `(^|:|\\])443$`, deployEndpointAwkPattern("", 443))
+}
+
+func TestTruncateForDeployStep(t *testing.T) {
+	require.Equal(t, "abc", truncateForDeployStep(" abc ", 10))
+	require.Equal(t, "abc...(truncated)", truncateForDeployStep("abcdef", 3))
 }
 
 func TestNormalizeDeployOutboundProxyURLs_MultipleLines(t *testing.T) {

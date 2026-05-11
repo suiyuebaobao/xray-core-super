@@ -27,6 +27,7 @@ func setupRelayDeployTestDB(t *testing.T) *gorm.DB {
 		&model.Relay{},
 		&model.RelayBackend{},
 		&model.RelayConfigTask{},
+		&model.RelayTrafficSnapshot{},
 	))
 	return db
 }
@@ -199,4 +200,43 @@ func TestFinalizeRelayDeploy_BindsBackendWithExitNodePort(t *testing.T) {
 	require.EqualValues(t, 24443, backends[0].ListenPort)
 	require.Equal(t, "203.0.113.10", backends[0].TargetHost)
 	require.EqualValues(t, 443, backends[0].TargetPort)
+}
+
+func TestRelayRepository_ForceDeleteCleansFailedDeployRecords(t *testing.T) {
+	db := setupRelayDeployTestDB(t)
+	ctx := context.Background()
+	relayRepo := repository.NewRelayRepository(db)
+
+	relay, err := relayRepo.Create(ctx, &model.Relay{
+		Name:           "relay",
+		Host:           "198.51.100.10",
+		ForwarderType:  "haproxy",
+		AgentBaseURL:   "http://198.51.100.10:8080",
+		AgentTokenHash: "hash",
+		Status:         "online",
+		IsEnabled:      true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&model.RelayBackend{
+		RelayID: relay.ID, ExitNodeID: 1, Name: "backend",
+		ListenPort: 24443, TargetHost: "203.0.113.10", TargetPort: 443,
+		IsEnabled: true,
+	}).Error)
+	require.NoError(t, db.Create(&model.RelayConfigTask{
+		RelayID: relay.ID, Action: "RELOAD_CONFIG", Status: "PENDING",
+		ScheduledAt: time.Now(), IdempotencyKey: "relay-cleanup-test",
+	}).Error)
+
+	require.ErrorIs(t, relayRepo.Delete(ctx, relay.ID), repository.ErrRelayHasEnabledBackends)
+	require.NoError(t, relayRepo.ForceDelete(ctx, relay.ID))
+
+	var relayCount int64
+	require.NoError(t, db.Model(&model.Relay{}).Where("id = ?", relay.ID).Count(&relayCount).Error)
+	require.Zero(t, relayCount)
+	var backendCount int64
+	require.NoError(t, db.Model(&model.RelayBackend{}).Where("relay_id = ?", relay.ID).Count(&backendCount).Error)
+	require.Zero(t, backendCount)
+	var taskCount int64
+	require.NoError(t, db.Model(&model.RelayConfigTask{}).Where("relay_id = ?", relay.ID).Count(&taskCount).Error)
+	require.Zero(t, taskCount)
 }

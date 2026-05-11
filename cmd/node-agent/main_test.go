@@ -46,6 +46,19 @@ func TestParseCenterServerURLs_AddsKnownIPsForDomain(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_UsesNodePortEnv(t *testing.T) {
+	t.Setenv("CENTER_SERVER_URL", "http://center.test")
+	t.Setenv("NODE_ID", "7")
+	t.Setenv("NODE_TOKEN", "node-token")
+	t.Setenv("NODE_PORT", "24443")
+
+	cfg := loadConfig()
+
+	if cfg.NodePort != 24443 {
+		t.Fatalf("NodePort = %d, want 24443", cfg.NodePort)
+	}
+}
+
 func TestPostJSON_FallsBackToNextCenterAndRemembersSuccess(t *testing.T) {
 	var requestedHosts []string
 	agent := NewAgent(&Config{

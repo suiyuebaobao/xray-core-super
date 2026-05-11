@@ -2050,6 +2050,31 @@ func (r *RelayRepository) Delete(ctx context.Context, id uint64) error {
 	})
 }
 
+// ForceDelete 删除一键部署失败产生的半成品中转记录，并级联清理后端、任务和快照。
+func (r *RelayRepository) ForceDelete(ctx context.Context, id uint64) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var backendIDs []uint64
+		if err := tx.Model(&model.RelayBackend{}).Where("relay_id = ?", id).Pluck("id", &backendIDs).Error; err != nil {
+			return err
+		}
+		if len(backendIDs) > 0 {
+			if err := tx.Where("relay_backend_id IN ?", backendIDs).Delete(&model.RelayTrafficSnapshot{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("relay_id = ?", id).Delete(&model.RelayBackend{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("relay_id = ?", id).Delete(&model.RelayConfigTask{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("relay_id = ?", id).Delete(&model.RelayTrafficSnapshot{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.Relay{}, id).Error
+	})
+}
+
 // List 列出所有中转节点。
 func (r *RelayRepository) List(ctx context.Context) ([]model.Relay, error) {
 	var relays []model.Relay

@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -37,6 +38,15 @@ type NodeDeployService struct {
 	relayRepo     *repository.RelayRepository
 	nodeAccessSvc *NodeAccessService
 }
+
+const (
+	nodeAgentContainerName     = "raypilot-node-agent"
+	relayAgentContainerName    = "raypilot-relay-agent"
+	deployContainerWaitTimeout = 45 * time.Second
+	deployRealityWaitTimeout   = 45 * time.Second
+	deployHeartbeatWaitTimeout = 45 * time.Second
+	deployPortWaitTimeout      = 30 * time.Second
+)
 
 // NewNodeDeployService 创建节点部署服务。
 func NewNodeDeployService(nodeRepo *repository.NodeRepository, nodeHostRepo ...*repository.NodeHostRepository) *NodeDeployService {
@@ -305,6 +315,11 @@ type deployTransportOption struct {
 	Flow      string
 }
 
+type deployListenEndpoint struct {
+	IP   string
+	Port uint32
+}
+
 func listenEndpointKey(ip string, port uint32) string {
 	return fmt.Sprintf("%s:%d", strings.TrimSpace(ip), port)
 }
@@ -502,6 +517,7 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 	result := &DeployResult{Steps: []Step{}}
 	var sshClient *ssh.Client
 	var createdNodeID uint64
+	containerStarted := false
 
 	addStep := func(name, status, msg string) {
 		log.Printf("[deploy] [%s] %s: %s", name, status, msg)
@@ -509,6 +525,14 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 	}
 	fail := func(format string, args ...interface{}) (*DeployResult, error) {
 		err := fmt.Errorf(format, args...)
+		if containerStarted && sshClient != nil {
+			s.collectContainerDiagnostics(sshClient, nodeAgentContainerName, addStep)
+			if cleanupErr := s.removeDeployContainers(sshClient, nodeAgentContainerName, "suiyue-node-agent"); cleanupErr != nil {
+				addStep("清理容器", "failed", cleanupErr.Error())
+			} else {
+				addStep("清理容器", "success", "已移除本次失败部署的 node-agent 容器")
+			}
+		}
 		if createdNodeID > 0 {
 			if delErr := s.nodeRepo.Delete(ctx, createdNodeID); delErr != nil {
 				addStep("清理记录", "failed", delErr.Error())
@@ -518,6 +542,13 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 		}
 		return result, err
 	}
+
+	imagePath, imageSize, err := locateNodeAgentImage()
+	if err != nil {
+		addStep("镜像预检", "failed", err.Error())
+		return result, err
+	}
+	addStep("镜像预检", "success", fmt.Sprintf("本地镜像包可用: %s (%s)", imagePath, formatBytes(imageSize)))
 
 	// Step 1: 连接 SSH
 	addStep("SSH 连接", "running", fmt.Sprintf("连接到 %s@%s:%d", req.SSHUser, req.SSHHost, req.SSHPort))
@@ -533,6 +564,13 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 	}
 	defer sshClient.Close()
 	addStep("SSH 连接", "success", "连接成功")
+
+	addStep("服务器预检", "running", "检查系统、磁盘和基础命令")
+	if err := s.preflightRemoteServer(sshClient, imageSize); err != nil {
+		addStep("服务器预检", "failed", err.Error())
+		return result, fmt.Errorf("服务器预检失败: %w", err)
+	}
+	addStep("服务器预检", "success", "目标服务器满足 Docker 部署要求")
 
 	// Step 2: 检测/安装 Docker
 	addStep("检测 Docker", "running", "检查 Docker 是否已安装")
@@ -559,7 +597,7 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 
 	// Step 4: 推送 Docker 镜像
 	addStep("推送镜像", "running", "准备推送 node-agent 镜像")
-	if err := s.pushImage(sshClient); err != nil {
+	if err := s.pushImage(sshClient, imagePath); err != nil {
 		addStep("推送镜像", "failed", err.Error())
 		return result, fmt.Errorf("镜像推送失败: %w", err)
 	}
@@ -571,6 +609,14 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 		return result, err
 	}
 	addStep("清理旧节点代理", "success", "旧节点代理已清理")
+
+	requestedEndpoints := []deployListenEndpoint{{IP: deployListenIP(false, req.SSHHost), Port: options[0].Port}}
+	addStep("检查端口占用", "running", fmt.Sprintf("检查节点端点 %s 是否空闲", formatDeployListenEndpoints(requestedEndpoints)))
+	if err := s.ensureEndpointsFree(sshClient, requestedEndpoints); err != nil {
+		addStep("检查端口占用", "failed", err.Error())
+		return result, err
+	}
+	addStep("检查端口占用", "success", "节点端口可用")
 
 	nodeToken := strings.TrimSpace(req.NodeToken)
 	if nodeToken == "" {
@@ -629,6 +675,7 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 		addStep("启动容器", "failed", err.Error())
 		return fail("容器启动失败: %w", err)
 	}
+	containerStarted = true
 	addStep("启动容器", "success", "容器启动成功")
 
 	// Step 7: 读取节点实际 Reality 参数并写回中心，保证订阅链接可直接使用。
@@ -638,6 +685,20 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 		return fail("Reality 参数同步失败: %w", err)
 	}
 	addStep("同步 Reality 参数", "success", "已写回 SNI、公钥和 Short ID")
+
+	addStep("等待心跳", "running", "等待 node-agent 回连中心服务")
+	if err := s.waitExitHeartbeat(ctx, node.ID, time.Now().Add(-5*time.Second), deployHeartbeatWaitTimeout); err != nil {
+		addStep("等待心跳", "failed", err.Error())
+		return fail("node-agent 心跳失败: %w", err)
+	}
+	addStep("等待心跳", "success", "node-agent 已回连中心服务")
+
+	addStep("验证端口", "running", fmt.Sprintf("检查节点端口 %d 是否监听", node.Port))
+	if err := s.waitPortsOwnedBy(sshClient, []uint32{node.Port}, "xray", deployPortWaitTimeout); err != nil {
+		addStep("验证端口", "failed", err.Error())
+		return fail("节点端口验证失败: %w", err)
+	}
+	addStep("验证端口", "success", "Xray 节点端口已监听")
 
 	if err := s.finalizeExitDeploy(ctx, req, []uint64{node.ID}, addStep); err != nil {
 		return fail("部署后自动配置失败: %w", err)
@@ -742,12 +803,21 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 	var sshClient *ssh.Client
 	var createdHostID uint64
 	var createdNodeIDs []uint64
+	containerStarted := false
 	addStep := func(name, status, msg string) {
 		log.Printf("[deploy-multi] [%s] %s: %s", name, status, msg)
 		result.Steps = append(result.Steps, Step{Name: name, Status: status, Message: msg})
 	}
 	fail := func(format string, args ...interface{}) (*DeployResult, error) {
 		err := fmt.Errorf(format, args...)
+		if containerStarted && sshClient != nil {
+			s.collectContainerDiagnostics(sshClient, nodeAgentContainerName, addStep)
+			if cleanupErr := s.removeDeployContainers(sshClient, nodeAgentContainerName, "suiyue-node-agent"); cleanupErr != nil {
+				addStep("清理容器", "failed", cleanupErr.Error())
+			} else {
+				addStep("清理容器", "success", "已移除本次失败部署的 multi_exit node-agent 容器")
+			}
+		}
 		for _, id := range createdNodeIDs {
 			if delErr := s.nodeRepo.Delete(ctx, id); delErr != nil {
 				addStep("清理节点", "failed", fmt.Sprintf("节点 %d: %v", id, delErr))
@@ -763,6 +833,13 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 		return result, err
 	}
 
+	imagePath, imageSize, err := locateNodeAgentImage()
+	if err != nil {
+		addStep("镜像预检", "failed", err.Error())
+		return result, err
+	}
+	addStep("镜像预检", "success", fmt.Sprintf("本地镜像包可用: %s (%s)", imagePath, formatBytes(imageSize)))
+
 	addStep("SSH 连接", "running", fmt.Sprintf("连接到 %s@%s:%d", req.SSHUser, req.SSHHost, req.SSHPort))
 	sshClient = ssh.New(ssh.Config{Host: req.SSHHost, Port: req.SSHPort, User: req.SSHUser, Password: req.SSHPassword})
 	if err := sshClient.Connect(); err != nil {
@@ -771,6 +848,13 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 	}
 	defer sshClient.Close()
 	addStep("SSH 连接", "success", "连接成功")
+
+	addStep("服务器预检", "running", "检查系统、磁盘和基础命令")
+	if err := s.preflightRemoteServer(sshClient, imageSize); err != nil {
+		addStep("服务器预检", "failed", err.Error())
+		return result, fmt.Errorf("服务器预检失败: %w", err)
+	}
+	addStep("服务器预检", "success", "目标服务器满足 Docker 部署要求")
 
 	if req.MultiIPEnabled {
 		addStep("校验出口 IP", "running", "确认所选 IP 存在于服务器并可作为公网出口")
@@ -795,7 +879,7 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 	}
 
 	addStep("推送镜像", "running", "准备推送 node-agent 镜像")
-	if err := s.pushImage(sshClient); err != nil {
+	if err := s.pushImage(sshClient, imagePath); err != nil {
 		addStep("推送镜像", "failed", err.Error())
 		return result, fmt.Errorf("镜像推送失败: %w", err)
 	}
@@ -807,6 +891,14 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 		return result, err
 	}
 	addStep("清理旧节点代理", "success", "旧节点代理已清理")
+
+	requestedEndpoints := deployListenEndpointsForOptions(selectedIPs, req.MultiIPEnabled, options, len(proxyURLs))
+	addStep("检查端口占用", "running", fmt.Sprintf("检查节点端点 %s 是否空闲", formatDeployListenEndpoints(requestedEndpoints)))
+	if err := s.ensureEndpointsFree(sshClient, requestedEndpoints); err != nil {
+		addStep("检查端口占用", "failed", err.Error())
+		return result, err
+	}
+	addStep("检查端口占用", "success", "节点端口可用")
 
 	hostToken := strings.TrimSpace(req.NodeToken)
 	if hostToken == "" {
@@ -917,6 +1009,7 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 		addStep("启动容器", "failed", err.Error())
 		return fail("容器启动失败: %w", err)
 	}
+	containerStarted = true
 	addStep("启动容器", "success", "容器启动成功")
 
 	addStep("同步 Reality 参数", "running", "读取 multi_exit Xray 配置")
@@ -925,6 +1018,24 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 		return fail("Reality 参数同步失败: %w", err)
 	}
 	addStep("同步 Reality 参数", "success", "已写回所有逻辑节点的 SNI、公钥和 Short ID")
+
+	addStep("等待心跳", "running", "等待 multi_exit node-agent 回连中心服务")
+	if err := s.waitNodeHostHeartbeat(ctx, nodeHost.ID, time.Now().Add(-5*time.Second), deployHeartbeatWaitTimeout); err != nil {
+		addStep("等待心跳", "failed", err.Error())
+		return fail("multi_exit node-agent 心跳失败: %w", err)
+	}
+	addStep("等待心跳", "success", "multi_exit node-agent 已回连中心服务")
+
+	endpoints := make([]deployListenEndpoint, 0, len(nodeConfigs))
+	for _, cfg := range nodeConfigs {
+		endpoints = append(endpoints, deployListenEndpoint{IP: cfg.IP, Port: cfg.Port})
+	}
+	addStep("验证端口", "running", "检查所有逻辑节点端口是否监听")
+	if err := s.waitEndpointsOwnedBy(sshClient, endpoints, "xray", deployPortWaitTimeout); err != nil {
+		addStep("验证端口", "failed", err.Error())
+		return fail("节点端口验证失败: %w", err)
+	}
+	addStep("验证端口", "success", fmt.Sprintf("%d 个逻辑节点端点已由 Xray 监听", len(uniqueDeployListenEndpoints(endpoints))))
 
 	if err := s.finalizeExitDeploy(ctx, req, createdNodeIDs, addStep); err != nil {
 		return fail("部署后自动配置失败: %w", err)
@@ -1092,6 +1203,23 @@ func uniqueDeployUint64s(values []uint64) []uint64 {
 		return []uint64{}
 	}
 	return normalized
+}
+
+func uniqueDeployPorts(values []uint32) []uint32 {
+	seen := map[uint32]struct{}{}
+	result := make([]uint32, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result
 }
 
 // RepairCenterURLs 通过 SSH 修复已部署 node-agent 的中心地址。
@@ -1349,42 +1477,66 @@ func (s *NodeDeployService) repairHeartbeatAfter(ctx context.Context, req *Repai
 }
 
 func (s *NodeDeployService) checkDocker(client *ssh.Client) (bool, error) {
-	out, err := client.Exec("docker --version")
+	out, err := client.Exec("docker --version && docker info >/dev/null 2>&1")
 	return err == nil && strings.Contains(out, "Docker"), nil
 }
 
 func (s *NodeDeployService) installDocker(client *ssh.Client) error {
-	_, err := client.Exec("curl -fsSL https://get.docker.com | bash")
-	if err != nil {
-		return fmt.Errorf("install docker: %w", err)
-	}
-	// 等待 Docker 启动
-	time.Sleep(3 * time.Second)
-	_, err = client.Exec("docker ps")
-	if err != nil {
-		return fmt.Errorf("docker not running after install: %w", err)
+	cmd := `set -e
+export DEBIAN_FRONTEND=noninteractive
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+	exit 0
+fi
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl unmask docker 2>/dev/null || true
+	systemctl start docker 2>/dev/null || true
+fi
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+	exit 0
+fi
+if command -v apt-get >/dev/null 2>&1; then
+	apt-get update -y
+	apt-get install -y ca-certificates curl gnupg lsb-release
+fi
+curl -fsSL --retry 5 --retry-delay 2 --connect-timeout 15 https://get.docker.com -o /tmp/get-docker.sh
+sh /tmp/get-docker.sh
+rm -f /tmp/get-docker.sh
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl enable docker >/dev/null 2>&1 || true
+	systemctl start docker >/dev/null 2>&1 || true
+fi
+deadline=$((SECONDS+45))
+until docker info >/dev/null 2>&1; do
+	if [ "$SECONDS" -ge "$deadline" ]; then
+		docker --version || true
+		systemctl status docker --no-pager 2>/dev/null || true
+		exit 1
+	fi
+	sleep 2
+done
+docker ps >/dev/null`
+	if out, err := client.Exec(cmd); err != nil {
+		return fmt.Errorf("install docker: %w, output: %s", err, strings.TrimSpace(out))
 	}
 	return nil
 }
 
 func (s *NodeDeployService) checkContainerRunning(client *ssh.Client) (bool, error) {
-	out, err := client.Exec("docker ps --format '{{.Names}}\t{{.Status}}' | grep -E '^(raypilot-node-agent|suiyue-node-agent)[[:space:]]'")
+	out, err := client.Exec("docker ps --format '{{.Names}}\t{{.Status}}' | grep -E '^(raypilot-node-agent|suiyue-node-agent|raypilot-relay-agent|suiyue-relay-agent)[[:space:]]'")
 	return err == nil && strings.TrimSpace(out) != "", nil
 }
 
-func (s *NodeDeployService) pushImage(client *ssh.Client) error {
-	imagePath := ""
-	for _, candidate := range nodeAgentImageCandidates() {
-		if _, err := os.Stat(candidate); err == nil {
-			imagePath = candidate
-			break
+func (s *NodeDeployService) pushImage(client *ssh.Client, imagePath ...string) error {
+	path := strings.TrimSpace(firstString(imagePath))
+	if path == "" {
+		var err error
+		path, _, err = locateNodeAgentImage()
+		if err != nil {
+			return err
 		}
 	}
-	if imagePath == "" {
-		return fmt.Errorf("node-agent Docker image not found, checked %s; please run: make node-agent-image", strings.Join(nodeAgentImageCandidates(), ", "))
-	}
 
-	data, err := os.ReadFile(imagePath)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read image file: %w", err)
 	}
@@ -1395,13 +1547,52 @@ func (s *NodeDeployService) pushImage(client *ssh.Client) error {
 		return fmt.Errorf("upload image: %w", err)
 	}
 
-	// 在远程加载镜像
-	_, err = client.Exec(fmt.Sprintf("docker load < %s && rm -f %s", remotePath, remotePath))
-	if err != nil {
-		return fmt.Errorf("load image on remote: %w", err)
+	cmd := fmt.Sprintf("docker load < %s && rm -f %s && docker image inspect raypilot/node-agent:latest >/dev/null", remotePath, remotePath)
+	if out, err := client.Exec(cmd); err != nil {
+		return fmt.Errorf("load image on remote: %w, output: %s", err, strings.TrimSpace(out))
 	}
 
 	return nil
+}
+
+func firstString(values []string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func locateNodeAgentImage() (string, int64, error) {
+	if path := strings.TrimSpace(os.Getenv("NODE_AGENT_IMAGE_PATH")); path != "" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", 0, fmt.Errorf("node-agent Docker image not found at NODE_AGENT_IMAGE_PATH=%s: %w; please run: make node-agent-image", path, err)
+		}
+		if info.IsDir() {
+			return "", 0, fmt.Errorf("node-agent Docker image path is a directory: %s", path)
+		}
+		if info.Size() <= 0 {
+			return "", 0, fmt.Errorf("node-agent Docker image is empty: %s", path)
+		}
+		return path, info.Size(), nil
+	}
+	checked := nodeAgentImageCandidates()
+	for _, candidate := range checked {
+		info, err := os.Stat(candidate)
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			continue
+		}
+		if info.Size() <= 0 {
+			return "", 0, fmt.Errorf("node-agent Docker image is empty: %s", candidate)
+		}
+		return candidate, info.Size(), nil
+	}
+	return "", 0, fmt.Errorf("node-agent Docker image not found, checked %s; please run: make node-agent-image", strings.Join(checked, ", "))
 }
 
 func nodeAgentImageCandidates() []string {
@@ -1437,6 +1628,49 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
+func formatBytes(bytes int64) string {
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	const unit = 1024
+	value := float64(bytes)
+	for _, suffix := range []string{"KB", "MB", "GB"} {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f %s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1f TB", value/unit)
+}
+
+func (s *NodeDeployService) preflightRemoteServer(client *ssh.Client, imageSize int64) error {
+	requiredKB := (imageSize / 1024) * 3
+	if requiredKB < 512*1024 {
+		requiredKB = 512 * 1024
+	}
+	cmd := fmt.Sprintf(`set -e
+printf 'os='
+(cat /etc/os-release 2>/dev/null | grep '^PRETTY_NAME=' | cut -d= -f2- | tr -d '"' || uname -a)
+printf 'arch='
+uname -m
+command -v sh >/dev/null
+command -v curl >/dev/null || command -v wget >/dev/null || command -v apt-get >/dev/null || command -v yum >/dev/null || command -v dnf >/dev/null
+free_kb="$(df -Pk /tmp | awk 'NR==2 {print $4}')"
+if [ -z "$free_kb" ] || [ "$free_kb" -lt %d ]; then
+	echo "insufficient /tmp disk: ${free_kb:-0} KB available, need at least %d KB" >&2
+	exit 1
+fi
+if command -v lsof >/dev/null 2>&1; then
+	lsof -iTCP:8080 -sTCP:LISTEN -Pn 2>/dev/null || true
+elif command -v ss >/dev/null 2>&1; then
+	ss -lntp 2>/dev/null | grep ':8080 ' || true
+fi`, requiredKB, requiredKB)
+	if out, err := client.Exec(cmd); err != nil {
+		return fmt.Errorf("%w, output: %s", err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
 func (s *NodeDeployService) cleanupLegacyNodeAgent(client *ssh.Client) error {
 	cmd := `set +e
 	if command -v systemctl >/dev/null 2>&1; then
@@ -1456,6 +1690,8 @@ func (s *NodeDeployService) cleanupLegacyNodeAgent(client *ssh.Client) error {
 	rm -f /etc/systemd/system/suiyue-node-agent.service
 	rm -f /usr/local/bin/node-agent /usr/bin/node-agent /root/node-agent
 	rm -f /tmp/node-agent-image.tar.gz /tmp/node-agent-image.tar
+	rm -f /usr/local/etc/xray/config.json /usr/local/etc/xray/config.json.bak
+	rm -f /etc/raypilot/haproxy/haproxy.cfg /etc/raypilot/haproxy/haproxy.cfg.bak
 	if command -v systemctl >/dev/null 2>&1; then
 		systemctl daemon-reload 2>/dev/null || true
 	fi
@@ -1467,8 +1703,59 @@ func (s *NodeDeployService) cleanupLegacyNodeAgent(client *ssh.Client) error {
 	return nil
 }
 
+func (s *NodeDeployService) removeDeployContainers(client *ssh.Client, names ...string) error {
+	quoted := make([]string, 0, len(names))
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		quoted = append(quoted, shellQuote(name))
+	}
+	if len(quoted) == 0 {
+		return nil
+	}
+	if out, err := client.Exec(fmt.Sprintf("docker rm -f %s 2>/dev/null || true", strings.Join(quoted, " "))); err != nil {
+		return fmt.Errorf("remove deploy containers: %w, output: %s", err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+func (s *NodeDeployService) collectContainerDiagnostics(client *ssh.Client, containerName string, addStep func(name, status, msg string)) {
+	if addStep == nil {
+		return
+	}
+	containerName = strings.TrimSpace(containerName)
+	if containerName == "" {
+		return
+	}
+	cmd := fmt.Sprintf(`set +e
+echo "== docker ps =="
+docker ps -a --filter name=%s --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+echo "== recent logs =="
+docker logs --tail 160 %s 2>&1
+echo "== listening ports =="
+(ss -lntp 2>/dev/null || netstat -lntp 2>/dev/null || true) | head -80`, shellQuote(containerName), shellQuote(containerName))
+	out, err := client.Exec(cmd)
+	msg := strings.TrimSpace(out)
+	if err != nil {
+		msg = strings.TrimSpace(fmt.Sprintf("%s\n%v", msg, err))
+	}
+	if msg == "" {
+		msg = "无可用容器诊断输出"
+	}
+	addStep("容器诊断", "success", truncateForDeployStep(msg, 6000))
+}
+
+func truncateForDeployStep(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	return value[:max] + "...(truncated)"
+}
+
 func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string, centerURLList []string, node *model.Node, nodeToken string) error {
-	containerName := "raypilot-node-agent"
+	containerName := nodeAgentContainerName
 	centerURLs := centerURLsEnvValue(centerURL, centerURLList)
 
 	// 先停止并删除同名容器和旧品牌容器（如果存在）
@@ -1481,6 +1768,7 @@ func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string,
 		-e CENTER_SERVER_URLS=%s \
 		-e NODE_ID=%d \
 		-e NODE_TOKEN=%s \
+		-e NODE_PORT=%d \
 		-e NODE_TRANSPORT=%s \
 		-e OUTBOUND_TYPE=%s \
 		-e OUTBOUND_IP=%s \
@@ -1492,28 +1780,18 @@ func (s *NodeDeployService) startContainer(client *ssh.Client, centerURL string,
 		-e XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json \
 		-e XRAY_API_SERVER=127.0.0.1:10085 \
 		-v /usr/local/etc/xray:/usr/local/etc/xray:rw \
-		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), shellQuote(centerURLs), node.ID, shellQuote(nodeToken), shellQuote(node.Transport), shellQuote(node.OutboundType), shellQuote(node.OutboundIP), shellQuote(derefString(node.OutboundProxyURL)), shellQuote(node.XHTTPPath), shellQuote(node.XHTTPHost), shellQuote(node.XHTTPMode))
+		raypilot/node-agent:latest`, shellQuote(containerName), shellQuote(centerURL), shellQuote(centerURLs), node.ID, shellQuote(nodeToken), node.Port, shellQuote(node.Transport), shellQuote(node.OutboundType), shellQuote(node.OutboundIP), shellQuote(derefString(node.OutboundProxyURL)), shellQuote(node.XHTTPPath), shellQuote(node.XHTTPHost), shellQuote(node.XHTTPMode))
 
 	out, err := client.Exec(cmd)
 	if err != nil {
 		return fmt.Errorf("start container: %w, output: %s", err, out)
 	}
 
-	// 等待容器启动
-	time.Sleep(3 * time.Second)
-	out, err = client.Exec(fmt.Sprintf("docker ps --filter name=%s --format '{{.Status}}'", shellQuote(containerName)))
-	if err != nil {
-		return fmt.Errorf("container not running after start: %w", err)
-	}
-	if strings.TrimSpace(out) == "" {
-		return fmt.Errorf("container not running after start")
-	}
-
-	return nil
+	return s.waitContainerRunning(client, containerName, deployContainerWaitTimeout)
 }
 
 func (s *NodeDeployService) startMultiExitContainer(client *ssh.Client, centerURL string, centerURLList []string, nodeHostID uint64, nodeHostToken string, nodes []MultiExitNodeConfig) error {
-	containerName := "raypilot-node-agent"
+	containerName := nodeAgentContainerName
 	centerURLs := centerURLsEnvValue(centerURL, centerURLList)
 	configData, err := json.Marshal(nodes)
 	if err != nil {
@@ -1542,15 +1820,40 @@ func (s *NodeDeployService) startMultiExitContainer(client *ssh.Client, centerUR
 		return fmt.Errorf("start multi_exit container: %w, output: %s", err, out)
 	}
 
-	time.Sleep(3 * time.Second)
-	out, err = client.Exec(fmt.Sprintf("docker ps --filter name=%s --format '{{.Status}}'", shellQuote(containerName)))
+	return s.waitContainerRunning(client, containerName, deployContainerWaitTimeout)
+}
+
+func (s *NodeDeployService) waitContainerRunning(client *ssh.Client, containerName string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastStatus string
+	for time.Now().Before(deadline) {
+		out, err := client.Exec(fmt.Sprintf("docker inspect -f '{{.State.Running}} {{.State.Status}} {{.State.ExitCode}}' %s 2>/dev/null", shellQuote(containerName)))
+		lastStatus = strings.TrimSpace(out)
+		if err == nil && strings.HasPrefix(lastStatus, "true ") {
+			return nil
+		}
+		if err == nil && strings.HasPrefix(lastStatus, "false exited") {
+			logs := s.containerLogs(client, containerName, 120)
+			return fmt.Errorf("container exited during startup: %s\n%s", lastStatus, logs)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	logs := s.containerLogs(client, containerName, 120)
+	if lastStatus == "" {
+		lastStatus = "not found"
+	}
+	return fmt.Errorf("container not running after %s: %s\n%s", timeout, lastStatus, logs)
+}
+
+func (s *NodeDeployService) containerLogs(client *ssh.Client, containerName string, lines int) string {
+	if lines <= 0 {
+		lines = 120
+	}
+	out, err := client.Exec(fmt.Sprintf("docker logs --tail %d %s 2>&1", lines, shellQuote(containerName)))
 	if err != nil {
-		return fmt.Errorf("container not running after start: %w", err)
+		return strings.TrimSpace(fmt.Sprintf("docker logs unavailable: %v\n%s", err, out))
 	}
-	if strings.TrimSpace(out) == "" {
-		return fmt.Errorf("container not running after start")
-	}
-	return nil
+	return strings.TrimSpace(out)
 }
 
 type realityConfig struct {
@@ -1561,7 +1864,7 @@ type realityConfig struct {
 }
 
 func (s *NodeDeployService) syncRealityConfig(ctx context.Context, client *ssh.Client, node *model.Node) error {
-	raw, err := client.Exec("cat /usr/local/etc/xray/config.json")
+	raw, err := s.waitXrayConfig(client, deployRealityWaitTimeout)
 	if err != nil {
 		return fmt.Errorf("read xray config: %w", err)
 	}
@@ -1599,7 +1902,7 @@ func (s *NodeDeployService) syncRealityConfig(ctx context.Context, client *ssh.C
 }
 
 func (s *NodeDeployService) syncRealityConfigForNodeIDs(ctx context.Context, client *ssh.Client, nodeIDs []uint64) error {
-	raw, err := client.Exec("cat /usr/local/etc/xray/config.json")
+	raw, err := s.waitXrayConfig(client, deployRealityWaitTimeout)
 	if err != nil {
 		return fmt.Errorf("read xray config: %w", err)
 	}
@@ -1641,6 +1944,280 @@ func (s *NodeDeployService) syncRealityConfigForNodeIDs(ctx context.Context, cli
 		}
 	}
 	return nil
+}
+
+func (s *NodeDeployService) waitXrayConfig(client *ssh.Client, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	var lastRaw string
+	for time.Now().Before(deadline) {
+		raw, err := client.Exec("test -s /usr/local/etc/xray/config.json && cat /usr/local/etc/xray/config.json")
+		if err == nil {
+			lastRaw = raw
+			if _, extractErr := extractRealityConfig(raw); extractErr == nil {
+				return raw, nil
+			} else {
+				lastErr = extractErr
+			}
+		} else {
+			lastErr = err
+		}
+		time.Sleep(2 * time.Second)
+	}
+	logs := s.containerLogs(client, nodeAgentContainerName, 160)
+	if lastErr != nil {
+		return "", fmt.Errorf("xray config not ready after %s: %w\n%s", timeout, lastErr, logs)
+	}
+	return "", fmt.Errorf("xray config not ready after %s, last content length=%d\n%s", timeout, len(lastRaw), logs)
+}
+
+func (s *NodeDeployService) waitExitHeartbeat(ctx context.Context, nodeID uint64, startedAt time.Time, timeout time.Duration) error {
+	if s.nodeRepo == nil || nodeID == 0 {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		node, err := s.nodeRepo.FindByID(ctx, nodeID)
+		if err == nil && node.LastHeartbeatAt != nil && node.LastHeartbeatAt.After(startedAt) {
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("timeout waiting node %d heartbeat", nodeID)
+}
+
+func (s *NodeDeployService) waitNodeHostHeartbeat(ctx context.Context, nodeHostID uint64, startedAt time.Time, timeout time.Duration) error {
+	if s.nodeHostRepo == nil || nodeHostID == 0 {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		host, err := s.nodeHostRepo.FindByID(ctx, nodeHostID)
+		if err == nil && host.LastHeartbeatAt != nil && host.LastHeartbeatAt.After(startedAt) {
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("timeout waiting node_host %d heartbeat", nodeHostID)
+}
+
+func (s *NodeDeployService) waitNodePorts(client *ssh.Client, ports []uint32, timeout time.Duration) error {
+	ports = uniqueDeployPorts(ports)
+	if len(ports) == 0 {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	var missing []uint32
+	for time.Now().Before(deadline) {
+		missing = missingListeningPorts(client, ports)
+		if len(missing) == 0 {
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	out, _ := client.Exec("ss -lntp 2>/dev/null || netstat -lntp 2>/dev/null || true")
+	return fmt.Errorf("ports not listening: %v; current listeners: %s", missing, truncateForDeployStep(out, 3000))
+}
+
+func missingListeningPorts(client *ssh.Client, ports []uint32) []uint32 {
+	missing := make([]uint32, 0, len(ports))
+	for _, port := range ports {
+		cmd := fmt.Sprintf(`if command -v ss >/dev/null 2>&1; then
+	ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:|\])%d$'
+else
+	netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:|\])%d$'
+fi`, port, port)
+		if _, err := client.Exec(cmd); err != nil {
+			missing = append(missing, port)
+		}
+	}
+	return missing
+}
+
+func deployPortsForOptions(options []deployTransportOption, proxyCount int) []uint32 {
+	if proxyCount <= 0 {
+		proxyCount = 1
+	}
+	ports := make([]uint32, 0, len(options)*proxyCount)
+	for proxyIndex := 0; proxyIndex < proxyCount; proxyIndex++ {
+		for _, option := range options {
+			if option.Port == 0 {
+				continue
+			}
+			ports = append(ports, option.Port+uint32(proxyIndex))
+		}
+	}
+	return uniqueDeployPorts(ports)
+}
+
+func deployListenEndpointsForOptions(selectedIPs []string, multiIPEnabled bool, options []deployTransportOption, proxyCount int) []deployListenEndpoint {
+	if proxyCount <= 0 {
+		proxyCount = 1
+	}
+	endpoints := make([]deployListenEndpoint, 0, len(selectedIPs)*len(options)*proxyCount)
+	for _, ip := range selectedIPs {
+		listenIP := deployListenIP(multiIPEnabled, ip)
+		for proxyIndex := 0; proxyIndex < proxyCount; proxyIndex++ {
+			for _, option := range options {
+				if option.Port == 0 {
+					continue
+				}
+				endpoints = append(endpoints, deployListenEndpoint{IP: listenIP, Port: option.Port + uint32(proxyIndex)})
+			}
+		}
+	}
+	return uniqueDeployListenEndpoints(endpoints)
+}
+
+func deployListenEndpointsForPorts(ports []uint32) []deployListenEndpoint {
+	endpoints := make([]deployListenEndpoint, 0, len(ports))
+	for _, port := range ports {
+		endpoints = append(endpoints, deployListenEndpoint{IP: "0.0.0.0", Port: port})
+	}
+	return uniqueDeployListenEndpoints(endpoints)
+}
+
+func uniqueDeployListenEndpoints(values []deployListenEndpoint) []deployListenEndpoint {
+	seen := map[string]struct{}{}
+	result := make([]deployListenEndpoint, 0, len(values))
+	for _, value := range values {
+		if value.Port == 0 {
+			continue
+		}
+		ip := strings.TrimSpace(value.IP)
+		if ip == "" {
+			ip = "0.0.0.0"
+		}
+		endpoint := deployListenEndpoint{IP: ip, Port: value.Port}
+		key := listenEndpointKey(endpoint.IP, endpoint.Port)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, endpoint)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Port == result[j].Port {
+			return result[i].IP < result[j].IP
+		}
+		return result[i].Port < result[j].Port
+	})
+	return result
+}
+
+func formatDeployListenEndpoints(endpoints []deployListenEndpoint) string {
+	endpoints = uniqueDeployListenEndpoints(endpoints)
+	parts := make([]string, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		parts = append(parts, listenEndpointKey(endpoint.IP, endpoint.Port))
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+func (s *NodeDeployService) ensureEndpointsFree(client *ssh.Client, endpoints []deployListenEndpoint) error {
+	endpoints = uniqueDeployListenEndpoints(endpoints)
+	if len(endpoints) == 0 {
+		return nil
+	}
+	busy := make([]string, 0)
+	for _, endpoint := range endpoints {
+		listeners, err := s.endpointListeners(client, endpoint)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(listeners) != "" {
+			busy = append(busy, fmt.Sprintf("%s: %s", listenEndpointKey(endpoint.IP, endpoint.Port), truncateForDeployStep(listeners, 600)))
+		}
+	}
+	if len(busy) > 0 {
+		return fmt.Errorf("listen endpoints already in use: %s", strings.Join(busy, "; "))
+	}
+	return nil
+}
+
+func (s *NodeDeployService) waitPortsOwnedBy(client *ssh.Client, ports []uint32, processName string, timeout time.Duration) error {
+	return s.waitEndpointsOwnedBy(client, deployListenEndpointsForPorts(ports), processName, timeout)
+}
+
+func (s *NodeDeployService) waitEndpointsOwnedBy(client *ssh.Client, endpoints []deployListenEndpoint, processName string, timeout time.Duration) error {
+	endpoints = uniqueDeployListenEndpoints(endpoints)
+	if len(endpoints) == 0 {
+		return nil
+	}
+	processName = strings.ToLower(strings.TrimSpace(processName))
+	deadline := time.Now().Add(timeout)
+	var lastDetail string
+	for time.Now().Before(deadline) {
+		missing := make([]string, 0)
+		wrongOwner := make([]string, 0)
+		for _, endpoint := range endpoints {
+			endpointKey := listenEndpointKey(endpoint.IP, endpoint.Port)
+			listeners, err := s.endpointListeners(client, endpoint)
+			if err != nil {
+				lastDetail = err.Error()
+				missing = append(missing, endpointKey)
+				continue
+			}
+			trimmed := strings.TrimSpace(listeners)
+			if trimmed == "" {
+				missing = append(missing, endpointKey)
+				continue
+			}
+			if processName != "" && !strings.Contains(strings.ToLower(trimmed), processName) {
+				wrongOwner = append(wrongOwner, fmt.Sprintf("%s: %s", endpointKey, truncateForDeployStep(trimmed, 600)))
+				continue
+			}
+		}
+		if len(missing) == 0 && len(wrongOwner) == 0 {
+			return nil
+		}
+		if len(missing) > 0 || len(wrongOwner) > 0 {
+			lastDetail = fmt.Sprintf("missing=%v wrong_owner=%v", missing, wrongOwner)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	out, _ := client.Exec("ss -lntp 2>/dev/null || netstat -lntp 2>/dev/null || true")
+	return fmt.Errorf("listen endpoints not owned by %s after %s: %s; current listeners: %s", processName, timeout, lastDetail, truncateForDeployStep(out, 3000))
+}
+
+func (s *NodeDeployService) portListeners(client *ssh.Client, port uint32) (string, error) {
+	return s.endpointListeners(client, deployListenEndpoint{IP: "0.0.0.0", Port: port})
+}
+
+func (s *NodeDeployService) endpointListeners(client *ssh.Client, endpoint deployListenEndpoint) (string, error) {
+	ip := strings.TrimSpace(endpoint.IP)
+	if ip == "" {
+		ip = "0.0.0.0"
+	}
+	port := endpoint.Port
+	if port == 0 || port > 65535 {
+		return "", fmt.Errorf("invalid port: %d", port)
+	}
+	endpointPattern := deployEndpointAwkPattern(ip, port)
+	cmd := fmt.Sprintf(`if command -v ss >/dev/null 2>&1; then
+	ss -lntp 2>/dev/null | awk 'NR>1 && $4 ~ /%s/ {print}'
+else
+	netstat -lntp 2>/dev/null | awk 'NR>2 && $4 ~ /%s/ {print}'
+fi`, endpointPattern, endpointPattern)
+	out, err := client.Exec(cmd)
+	if err != nil {
+		return "", fmt.Errorf("check listen endpoint %s listeners: %w", listenEndpointKey(ip, port), err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func deployEndpointAwkPattern(ip string, port uint32) string {
+	ip = strings.TrimSpace(ip)
+	if ip == "" || ip == "0.0.0.0" || ip == "::" || ip == "*" {
+		return fmt.Sprintf("(^|:|\\\\])%d$", port)
+	}
+	return regexp.QuoteMeta(ip) + fmt.Sprintf(":%d$", port)
 }
 
 func extractRealityConfig(raw string) (*realityConfig, error) {

@@ -194,7 +194,7 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 | 中心服务地址 | `[REDACTED]` |
 | NodeHost Token | `[REDACTED]` |
 
-部署方式：一台物理服务器只保留一个当前角色的 node-agent；旧 systemd/relay agent 不得与当前出口角色并存。一键部署镜像包由 `make node-agent-image` 生成到 `deploy/artifacts/node-agent-image.tar.gz`，Docker Compose 会把 `deploy/artifacts` 挂载到 API 容器 `/root/raypilot-artifacts` 供部署接口使用。
+部署方式：一台物理服务器只保留一个当前角色的 node-agent；旧 systemd/relay agent 不得与当前出口角色并存。一键部署镜像包由 `make node-agent-image` 生成到 `deploy/artifacts/node-agent-image.tar.gz`，Docker Compose 会把 `deploy/artifacts` 挂载到 API 容器 `/root/raypilot-artifacts` 供部署接口使用。一键部署必须以 Docker 容器闭环成功为准：部署前做镜像包和目标服务器预检，清理旧角色后必须检查本次节点/中转端口没有被 nginx、宝塔或其他进程占用；部署中等待 Docker 可用、容器持续运行、Xray/HAProxy 配置生成、agent 心跳回连，并确认节点端口由 `xray` 监听、中转端口由 `haproxy` 监听，不能只用“端口有人监听”当成功；失败时必须采集容器日志和端口诊断，并清理本次创建的容器、节点/中转记录、后端绑定和配置任务。单出口部署必须向容器写入 `NODE_PORT`，node-agent 生成 Xray 配置时按后台端口监听，不能固定 443。部署前必须清理旧 Xray/HAProxy 配置，避免脏服务器复用旧配置。
 
 ## 提交与 PR 要求
 

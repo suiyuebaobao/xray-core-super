@@ -69,7 +69,8 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 	result := &RelayDeployResult{Steps: []Step{}}
 	var sshClient *ssh.Client
 	var createdRelayID uint64
-	containerName := "raypilot-relay-agent"
+	containerName := relayAgentContainerName
+	containerStarted := false
 	centerURLs := normalizeCenterURLList(req.CenterURL, req.CenterURLs)
 	if len(centerURLs) == 0 {
 		return result, fmt.Errorf("center_url must be a valid http or https URL")
@@ -87,10 +88,18 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 	}
 	cleanup := func() {
 		if sshClient != nil {
-			_, _ = sshClient.Exec(fmt.Sprintf("docker rm -f %s suiyue-relay-agent 2>/dev/null", shellQuote(containerName)))
+			nodeDeployHelper := &NodeDeployService{}
+			if containerStarted {
+				nodeDeployHelper.collectContainerDiagnostics(sshClient, containerName, addStep)
+			}
+			if err := nodeDeployHelper.removeDeployContainers(sshClient, containerName, "suiyue-relay-agent"); err != nil {
+				addStep("清理容器", "failed", err.Error())
+			} else {
+				addStep("清理容器", "success", "已移除本次失败部署的 relay agent 容器")
+			}
 		}
 		if createdRelayID > 0 {
-			if delErr := s.relayRepo.Delete(ctx, createdRelayID); delErr != nil {
+			if delErr := s.relayRepo.ForceDelete(ctx, createdRelayID); delErr != nil {
 				addStep("清理记录", "failed", delErr.Error())
 			} else {
 				addStep("清理记录", "success", fmt.Sprintf("已删除未完成部署的中转记录 %d", createdRelayID))
@@ -111,6 +120,14 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 		return result, fmt.Errorf("unsupported forwarder_type: %s", forwarderType)
 	}
 
+	nodeDeployHelper := &NodeDeployService{}
+	imagePath, imageSize, err := locateNodeAgentImage()
+	if err != nil {
+		addStep("镜像预检", "failed", err.Error())
+		return result, err
+	}
+	addStep("镜像预检", "success", fmt.Sprintf("本地镜像包可用: %s (%s)", imagePath, formatBytes(imageSize)))
+
 	addStep("SSH 连接", "running", fmt.Sprintf("连接到 %s@%s:%d", req.SSHUser, req.SSHHost, req.SSHPort))
 	sshClient = ssh.New(ssh.Config{
 		Host:     req.SSHHost,
@@ -125,7 +142,13 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 	defer sshClient.Close()
 	addStep("SSH 连接", "success", "连接成功")
 
-	nodeDeployHelper := &NodeDeployService{}
+	addStep("服务器预检", "running", "检查系统、磁盘和基础命令")
+	if err := nodeDeployHelper.preflightRemoteServer(sshClient, imageSize); err != nil {
+		addStep("服务器预检", "failed", err.Error())
+		return result, fmt.Errorf("服务器预检失败: %w", err)
+	}
+	addStep("服务器预检", "success", "目标服务器满足 Docker 部署要求")
+
 	addStep("检测 Docker", "running", "检查 Docker 是否已安装")
 	dockerInstalled, _ := nodeDeployHelper.checkDocker(sshClient)
 	if !dockerInstalled {
@@ -140,11 +163,35 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 	}
 
 	addStep("推送镜像", "running", "准备推送 node-agent 镜像")
-	if err := nodeDeployHelper.pushImage(sshClient); err != nil {
+	if err := nodeDeployHelper.pushImage(sshClient, imagePath); err != nil {
 		addStep("推送镜像", "failed", err.Error())
 		return result, fmt.Errorf("镜像推送失败: %w", err)
 	}
 	addStep("推送镜像", "success", "镜像推送成功")
+
+	if req.ReplaceExistingRole {
+		addStep("清理旧节点代理", "running", "清理旧出口/中转 agent 容器和宿主机 Xray/HAProxy 配置")
+		if err := nodeDeployHelper.cleanupLegacyNodeAgent(sshClient); err != nil {
+			addStep("清理旧节点代理", "failed", err.Error())
+			return result, err
+		}
+		addStep("清理旧节点代理", "success", "旧节点代理已清理")
+	}
+
+	relayListenPorts := []uint32{}
+	if req.ExitNodeID > 0 {
+		listenPort := req.ListenPort
+		if listenPort == 0 {
+			listenPort = 24443
+		}
+		relayListenPorts = append(relayListenPorts, listenPort)
+		addStep("检查端口占用", "running", fmt.Sprintf("检查中转监听端口 %v 是否空闲", relayListenPorts))
+		if err := nodeDeployHelper.ensureEndpointsFree(sshClient, deployListenEndpointsForPorts(relayListenPorts)); err != nil {
+			addStep("检查端口占用", "failed", err.Error())
+			return result, err
+		}
+		addStep("检查端口占用", "success", "中转监听端口可用")
+	}
 
 	relayToken := strings.TrimSpace(req.RelayToken)
 	if relayToken == "" {
@@ -172,7 +219,7 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 		Status:         "offline",
 		IsEnabled:      true,
 	}
-	relay, err := s.relayRepo.Create(ctx, relay)
+	relay, err = s.relayRepo.Create(ctx, relay)
 	if err != nil {
 		addStep("创建记录", "failed", err.Error())
 		return result, fmt.Errorf("创建中转记录失败: %w", err)
@@ -185,6 +232,7 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 		addStep("启动容器", "failed", err.Error())
 		return fail("容器启动失败: %w", err)
 	}
+	containerStarted = true
 	addStep("启动容器", "success", "容器启动成功")
 
 	addStep("验证 HAProxy", "running", "检查容器内 HAProxy")
@@ -206,6 +254,18 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 		addStep("部署后自动配置", "failed", err.Error())
 		return fail("部署后自动配置失败: %w", err)
 	}
+	if req.ExitNodeID > 0 {
+		listenPort := req.ListenPort
+		if listenPort == 0 {
+			listenPort = 24443
+		}
+		addStep("验证中转端口", "running", fmt.Sprintf("检查 HAProxy 监听端口 %d", listenPort))
+		if err := (&NodeDeployService{}).waitPortsOwnedBy(sshClient, []uint32{listenPort}, "haproxy", deployPortWaitTimeout); err != nil {
+			addStep("验证中转端口", "failed", err.Error())
+			return fail("中转端口验证失败: %w", err)
+		}
+		addStep("验证中转端口", "success", "HAProxy 中转端口已监听")
+	}
 
 	result.RelayID = relay.ID
 	result.BackendIDs = backendIDs
@@ -226,7 +286,7 @@ func (s *RelayDeployService) Deploy(ctx context.Context, req *RelayDeployRequest
 }
 
 func startRelayContainer(client *ssh.Client, centerURL string, centerURLList []string, relayID uint64, relayToken string) error {
-	containerName := "raypilot-relay-agent"
+	containerName := relayAgentContainerName
 	centerURLs := centerURLsEnvValue(centerURL, centerURLList)
 	_, _ = client.Exec(fmt.Sprintf("docker rm -f %s suiyue-relay-agent 2>/dev/null", shellQuote(containerName)))
 	if _, err := client.Exec("mkdir -p /etc/raypilot/haproxy"); err != nil {
@@ -252,15 +312,7 @@ func startRelayContainer(client *ssh.Client, centerURL string, centerURLList []s
 		return fmt.Errorf("start relay container: %w, output: %s", err, out)
 	}
 
-	time.Sleep(3 * time.Second)
-	out, err = client.Exec(fmt.Sprintf("docker ps --filter name=%s --format '{{.Status}}'", shellQuote(containerName)))
-	if err != nil {
-		return fmt.Errorf("relay container not running after start: %w", err)
-	}
-	if strings.TrimSpace(out) == "" {
-		return fmt.Errorf("relay container not running after start")
-	}
-	return nil
+	return (&NodeDeployService{}).waitContainerRunning(client, containerName, deployContainerWaitTimeout)
 }
 
 func (s *RelayDeployService) finalizeRelayDeploy(ctx context.Context, req *RelayDeployRequest, relayID uint64, addStep func(name, status, msg string)) ([]uint64, error) {

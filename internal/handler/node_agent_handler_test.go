@@ -505,6 +505,43 @@ func TestAgentHandler_Heartbeat_StoredHashCannotAuthenticate(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
+func TestAgentHandler_Heartbeat_DisabledNodeRejected(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		DisableForeignKeyConstraintWhenMigrating: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.Node{}, &model.NodeAccessTask{}))
+
+	db.Create(&model.Node{
+		ID: 1, Name: "disabled-node", Protocol: "vless", Host: "node.test",
+		Port: 443, AgentBaseURL: "http://node:8080",
+		AgentTokenHash: agentTokenHash("correct-token"), IsEnabled: false,
+	})
+	require.NoError(t, db.Model(&model.Node{}).Where("id = ?", 1).Update("is_enabled", false).Error)
+
+	cfg := &config.Config{JWTSecret: "test-secret", JWTExpiresIn: 24 * 60 * 60, AgentAuthMode: "token", TaskRetryLimit: 10}
+	taskRepo := repository.NewNodeAccessTaskRepository(db)
+	nodeRepo := repository.NewNodeRepository(db)
+	planRepo := repository.NewPlanRepository(db)
+	subRepo := repository.NewSubscriptionRepository(db)
+	nodeAccessSvc := service.NewNodeAccessService(taskRepo, nodeRepo, planRepo, subRepo, nil, cfg)
+	agentHandler := handler.NewAgentHandler(nodeAccessSvc, nil, nodeRepo)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.POST("/api/agent/heartbeat", agentHandler.Heartbeat)
+
+	body := map[string]interface{}{"node_id": uint64(1), "token": "correct-token"}
+	jsonBody, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/agent/heartbeat", bytes.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
 // TestAgentHandler_TaskResult_WithLockToken 测试任务结果上报带 lock_token。
 func TestAgentHandler_TaskResult_WithLockToken(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})

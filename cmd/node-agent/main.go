@@ -69,6 +69,15 @@ func getUint64Env(key string, defaultVal uint64) uint64 {
 	return defaultVal
 }
 
+func getUint32Env(key string, defaultVal uint32) uint32 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
+			return uint32(n)
+		}
+	}
+	return defaultVal
+}
+
 func getIntEnv(key string, defaultVal int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -87,6 +96,7 @@ type Config struct {
 	AgentRole         string // exit 或 relay
 	NodeID            uint64 // 节点 ID
 	NodeToken         string // 节点鉴权 Token（明文传输，服务端只保存哈希）
+	NodePort          uint32 // 单出口节点监听端口
 	NodeTransport     string // 单出口节点传输层：tcp 或 xhttp
 	OutboundType      string // 单出口节点出站方式：direct 或 socks5
 	OutboundIP        string // 单出口节点出站源 IP；socks5 时表示连接上游代理的本机源 IP
@@ -151,6 +161,7 @@ func loadConfig() *Config {
 			log.Fatal("[agent] NODE_TOKEN is required")
 		}
 		cfg.NodeToken = plainToken
+		cfg.NodePort = getUint32Env("NODE_PORT", 443)
 		cfg.NodeTransport = normalizeAgentTransport(getEnv("NODE_TRANSPORT", "tcp"))
 		cfg.OutboundType = normalizeAgentOutboundType(getEnv("OUTBOUND_TYPE", "direct"))
 		cfg.OutboundIP = normalizeAgentOptionalIP(getEnv("OUTBOUND_IP", ""))
@@ -882,7 +893,7 @@ func (a *Agent) generateDefaultXrayConfig() error {
 	node := MultiExitNodeConfig{
 		NodeID:           a.cfg.NodeID,
 		IP:               "0.0.0.0",
-		Port:             443,
+		Port:             a.cfg.NodePort,
 		Transport:        a.cfg.NodeTransport,
 		OutboundType:     a.cfg.OutboundType,
 		OutboundIP:       a.cfg.OutboundIP,

@@ -93,7 +93,7 @@ func (h *AgentHandler) Heartbeat(c *gin.Context) {
 
 	// 验证节点凭证
 	node, err := h.nodeRepo.FindByID(c.Request.Context(), req.NodeID)
-	if err != nil || !validAgentToken(node.AgentTokenHash, req.Token) {
+	if err != nil || !node.IsEnabled || !validAgentToken(node.AgentTokenHash, req.Token) {
 		response.HandleError(c, response.ErrUnauthorized)
 		return
 	}
@@ -148,7 +148,7 @@ func (h *AgentHandler) TaskResult(c *gin.Context) {
 
 	// 验证节点凭证
 	node, err := h.nodeRepo.FindByID(c.Request.Context(), req.NodeID)
-	if err != nil || !validAgentToken(node.AgentTokenHash, req.Token) {
+	if err != nil || !node.IsEnabled || !validAgentToken(node.AgentTokenHash, req.Token) {
 		response.HandleError(c, response.ErrUnauthorized)
 		return
 	}
@@ -177,7 +177,7 @@ func (h *AgentHandler) TrafficReport(c *gin.Context) {
 
 	// 验证节点凭证
 	node, err := h.nodeRepo.FindByID(c.Request.Context(), req.NodeID)
-	if err != nil || !validAgentToken(node.AgentTokenHash, req.Token) {
+	if err != nil || !node.IsEnabled || !validAgentToken(node.AgentTokenHash, req.Token) {
 		response.HandleError(c, response.ErrUnauthorized)
 		return
 	}
@@ -223,7 +223,7 @@ func (h *AgentHandler) MultiHeartbeat(c *gin.Context) {
 	}
 
 	host, err := h.nodeHostRepo.FindByID(c.Request.Context(), req.NodeHostID)
-	if err != nil || !validAgentToken(host.AgentTokenHash, req.Token) {
+	if err != nil || !host.IsEnabled || !validAgentToken(host.AgentTokenHash, req.Token) {
 		response.HandleError(c, response.ErrUnauthorized)
 		return
 	}
@@ -287,7 +287,7 @@ func (h *AgentHandler) MultiTaskResult(c *gin.Context) {
 	}
 
 	host, err := h.nodeHostRepo.FindByID(c.Request.Context(), req.NodeHostID)
-	if err != nil || !validAgentToken(host.AgentTokenHash, req.Token) {
+	if err != nil || !host.IsEnabled || !validAgentToken(host.AgentTokenHash, req.Token) {
 		response.HandleError(c, response.ErrUnauthorized)
 		return
 	}
@@ -325,7 +325,7 @@ func (h *AgentHandler) MultiTrafficReport(c *gin.Context) {
 	}
 
 	host, err := h.nodeHostRepo.FindByID(c.Request.Context(), req.NodeHostID)
-	if err != nil || !validAgentToken(host.AgentTokenHash, req.Token) {
+	if err != nil || !host.IsEnabled || !validAgentToken(host.AgentTokenHash, req.Token) {
 		response.HandleError(c, response.ErrUnauthorized)
 		return
 	}
@@ -375,7 +375,7 @@ func (h *AgentHandler) RelayHeartbeat(c *gin.Context) {
 	}
 
 	relay, err := h.relayRepo.FindByID(c.Request.Context(), req.RelayID)
-	if err != nil || !validAgentToken(relay.AgentTokenHash, req.Token) {
+	if err != nil || !relay.IsEnabled || !validAgentToken(relay.AgentTokenHash, req.Token) {
 		response.HandleError(c, response.ErrUnauthorized)
 		return
 	}
@@ -430,7 +430,7 @@ func (h *AgentHandler) RelayTaskResult(c *gin.Context) {
 	}
 
 	relay, err := h.relayRepo.FindByID(c.Request.Context(), req.RelayID)
-	if err != nil || !validAgentToken(relay.AgentTokenHash, req.Token) {
+	if err != nil || !relay.IsEnabled || !validAgentToken(relay.AgentTokenHash, req.Token) {
 		response.HandleError(c, response.ErrUnauthorized)
 		return
 	}
@@ -461,7 +461,7 @@ func (h *AgentHandler) RelayTrafficReport(c *gin.Context) {
 	}
 
 	relay, err := h.relayRepo.FindByID(c.Request.Context(), req.RelayID)
-	if err != nil || !validAgentToken(relay.AgentTokenHash, req.Token) {
+	if err != nil || !relay.IsEnabled || !validAgentToken(relay.AgentTokenHash, req.Token) {
 		response.HandleError(c, response.ErrUnauthorized)
 		return
 	}

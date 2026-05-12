@@ -106,7 +106,7 @@ func TestNormalizeSubscriptionConfig_FiltersRulesAndKeepsCatchAll(t *testing.T) 
 		ProfileWebPageURL:     "javascript:alert(1)",
 	})
 
-	if cfg.ProfileName != "My-VPN.yaml" {
+	if cfg.ProfileName != "My-VPN" {
 		t.Fatalf("expected sanitized profile name, got %q", cfg.ProfileName)
 	}
 	if len(cfg.CustomRules) != 3 {
@@ -131,11 +131,60 @@ func TestParseSubscriptionConfig_MissingIncludeUserInfoDefaultsTrue(t *testing.T
 	if !cfg.IncludeUserInfo {
 		t.Fatalf("expected include_user_info to default true")
 	}
+	if !cfg.EnableURLTestGroup {
+		t.Fatalf("expected url-test group to default true")
+	}
 }
 
 func TestParseSubscriptionConfig_CanDisableUserInfo(t *testing.T) {
 	cfg := ParseSubscriptionConfig(`{"profile_name":"LeiYun","custom_rules":["MATCH,PROXY"],"include_user_info":false}`)
 	if cfg.IncludeUserInfo {
 		t.Fatalf("expected include_user_info to be disabled")
+	}
+}
+
+func TestParseSubscriptionConfig_ProxyGroupsAndURLTest(t *testing.T) {
+	cfg := ParseSubscriptionConfig(`{
+		"profile_name":"LeiYun",
+		"custom_rules":["MATCH,PROXY"],
+		"include_region_icon":true,
+		"enable_url_test_group":true,
+		"node_name_template":"{{flag}} {{region}} {{name}}",
+		"health_check_url":"https://cp.cloudflare.com/generate_204",
+		"url_test_interval":300,
+		"proxy_groups":[
+			{"name":"PROXY","type":"select","include_all":true,"include_auto":true,"include_direct":true},
+			{"name":"美国节点","type":"url-test","node_ids":[2,2,3],"include_direct":false}
+		]
+	}`)
+	if !cfg.EnableURLTestGroup {
+		t.Fatalf("expected url-test group to be enabled")
+	}
+	if cfg.NodeNameTemplate != "{{flag}} {{region}} {{name}}" {
+		t.Fatalf("unexpected node name template: %q", cfg.NodeNameTemplate)
+	}
+	if len(cfg.ProxyGroups) != 2 {
+		t.Fatalf("expected two proxy groups, got %#v", cfg.ProxyGroups)
+	}
+	if cfg.ProxyGroups[1].Type != "url-test" || len(cfg.ProxyGroups[1].NodeIDs) != 2 {
+		t.Fatalf("expected normalized manual url-test group, got %#v", cfg.ProxyGroups[1])
+	}
+}
+
+func TestNormalizeRegion_BuiltInAndCustom(t *testing.T) {
+	if len(RegionOptions) < 80 {
+		t.Fatalf("expected broad region catalog, got %d options", len(RegionOptions))
+	}
+	us := NormalizeRegion("us", "", "")
+	if us.Code != "US" || us.Name != "美国" || us.Flag != "🇺🇸" {
+		t.Fatalf("expected built-in US region, got %#v", us)
+	}
+	global := NormalizeRegion("global", "", "")
+	if global.Code != "GLOBAL" || global.Flag != "🌐" {
+		t.Fatalf("expected global region option, got %#v", global)
+	}
+	custom := NormalizeRegion("", "火星", "🚀")
+	if custom.Code != "CUSTOM" || custom.Name != "火星" || custom.Flag != "🚀" {
+		t.Fatalf("expected custom region to be preserved, got %#v", custom)
 	}
 }

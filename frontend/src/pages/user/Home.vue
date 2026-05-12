@@ -50,15 +50,10 @@
             </div>
             <!-- 订阅链接快速复制 -->
             <div v-if="subscription.tokens?.length > 0" class="sub-quick-link">
-              <el-radio-group v-model="quickFormat" size="small" class="quick-format">
-                <el-radio-button value="clash">Clash</el-radio-button>
-                <el-radio-button value="base64">Base64</el-radio-button>
-                <el-radio-button value="plain">URI</el-radio-button>
-              </el-radio-group>
-              <div class="link-label">{{ quickFormatLabel }} 订阅链接</div>
-              <el-input :model-value="getSubscriptionUrl(quickFormat)" readonly size="small">
+              <div class="link-label">Clash / mihomo 订阅链接</div>
+              <el-input :model-value="getSubscriptionUrl()" readonly size="small">
                 <template #append>
-                  <el-button @click="copyUrl(getSubscriptionUrl(quickFormat))">复制</el-button>
+                  <el-button @click="copyUrl(getSubscriptionUrl())">复制</el-button>
                 </template>
               </el-input>
             </div>
@@ -100,15 +95,6 @@ import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 const userStore = useUserStore()
 const subscription = ref(null)
 const loading = ref(false)
-const quickFormat = ref('clash')
-
-const subscriptionFormats = [
-  { value: 'clash', label: 'Clash' },
-  { value: 'base64', label: 'Base64' },
-  { value: 'plain', label: 'URI' },
-]
-
-const quickFormatLabel = computed(() => subscriptionFormats.find((item) => item.value === quickFormat.value)?.label || 'Clash')
 
 const trafficPools = computed(() => {
   if (!subscription.value) return []
@@ -209,9 +195,9 @@ function copyUrl(url) {
   })
 }
 
-function getSubscriptionUrl(format) {
+function getSubscriptionUrl() {
   if (!subscription.value || !subscription.value.tokens?.[0]) return ''
-  return `${window.location.origin}/sub/${subscription.value.tokens[0]}/${format}`
+  return `${window.location.origin}/sub/${subscription.value.tokens[0]}`
 }
 </script>
 
@@ -241,7 +227,7 @@ function getSubscriptionUrl(format) {
 .sub-quick-link {
   margin-top: 12px;
 }
-.quick-format {
+.quick-subscription-format {
   margin-bottom: 8px;
 }
 .sub-quick-link .link-label {

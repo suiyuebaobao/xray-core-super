@@ -1,50 +1,156 @@
-# Repository Guidelines
+# AGENTS.md
+
+本文件是 RayPilot 仓库唯一规则文件。原其他规则文件的有效项已整合到本文，后续不再维护多份规则，也不再要求跨规则文件同步。
+
+## 项目概述
+
+RayPilot 是一套面向 `xray-core` 节点的订阅分发、用户管理和中转管理系统。用户购买套餐后获得订阅链接，通过 Clash/mihomo、Shadowrocket、Surge 等客户端连接代理节点。节点控制面通过独立部署的 `node-agent` 管理本机 `xray-core` 的用户权限、流量上报、健康状态和配置任务。
+
+完整开发方案详见 `开发方案.md`。当前状态为 v1 功能开发完成，已进入测试与运维阶段；第一版直连与中转并存能力已落地，包含 `/admin/relays`、node-agent relay 模式和 HAProxy 配置下发。
+
+## 核心架构
+
+- 数据面：`xray-core` 负责实际代理流量转发，主要协议为 VLESS + Reality，传输层支持 TCP 与 XHTTP。
+- 控制面：`node-agent` 负责管理本机 `xray-core` 用户、Xray/HAProxy 配置、流量上报、状态上报和任务执行。
+- 中心服务：对出口节点只和 node-agent exit/multi_exit 模式通信，不直接跨公网调用 xray-core gRPC；中转阶段对接 node-agent relay 模式。
+- 订阅分发：HTTPS 下载订阅，唯一入口为 `/sub/{token}`，只下发 Clash/mihomo YAML；`/sub/{token}/clash`、`/sub/{token}/base64` 与 `/sub/{token}/plain` 等带后缀入口全部下线。
+- 中转能力：node-agent relay 模式和 TCP 透传中转层已落地，直连出口节点继续保留。
+- 流量计费：快照差值法，每次上报存储累计值，与上次快照求差得到增量，避免重复计费。
+- 任务管理：MySQL 任务表 + 乐观锁 `lock_token`，v1 不引入 Redis 或 BullMQ。
+
+## 技术栈
+
+| 层 | 技术 |
+| --- | --- |
+| 后端 | Go + Gin + GORM + MySQL 8.0+ |
+| 前端 | Vue 3 + Vite + Element Plus + Alova + Pinia + Vue Router 4 |
+| 部署 | Docker Compose + Nginx 反代 |
+| 鉴权 | JWT Access Token + Refresh Token |
+| 任务调度 | robfig/cron/v3 + MySQL 任务表 |
+| 节点代理 | xray-core + node-agent，relay 模式默认 HAProxy |
 
 ## 项目结构与模块组织
 
-本仓库是 RayPilot，包含 Go 后端、Vue 前端、部署配置和中文项目文档。
+本仓库包含 Go 后端、Vue 前端、部署配置和中文项目文档。
 
-- `cmd/api`、`cmd/worker`、`cmd/seed`、`cmd/node-agent`：可执行程序入口。
-- `internal/`：后端核心包，包括 handler、service、repository、model、middleware、scheduler、subscription、config、auth、database、response。
+- `cmd/api`：Gin HTTP API 服务入口，默认端口 3000。
+- `cmd/worker`：后台定时任务 Worker 入口。
+- `cmd/seed`：数据库种子工具，创建初始管理员。
+- `cmd/node-agent`：真实节点代理，管理本机 xray-core，支持 exit、multi_exit、relay 模式。
+- `cmd/node-agent-mock`：开发用节点代理模拟程序。
+- `internal/`：后端核心包，包括 handler、service、repository、model、middleware、scheduler、subscription、config、auth、database、response、agent、platform。
 - `migrations/`：SQL 数据库迁移，表结构以 migration 为准，不依赖 GORM 自动迁移。
 - `frontend/`：Vue 3 + Vite + Element Plus 前端项目，源码在 `frontend/src`。
 - `web/static/`：前端生产构建产物。
 - `deploy/nginx/`：Nginx 反向代理配置。
-- `文档/`：架构、接口、部署、运维和每日记录。
+- `文档/`：架构、接口、部署、运维、页面清单、测试报告和每日记录。
+- `开发方案.md`：完整开发方案。
 
 Go 测试文件与实现文件同目录，命名为 `*_test.go`。前端页面主要位于 `frontend/src/pages/user` 和 `frontend/src/pages/admin`。
 
+## 后端分层
+
+后端遵循 `HTTP Request -> Handler -> Service -> Repository -> MySQL` 的分层。
+
+- Handler 层位于 `internal/handler/`，只负责参数解析、调用 Service 和写响应，不写业务逻辑。
+- Service 层位于 `internal/service/`，承载业务规则、事务、权限和跨 Repository 编排，错误返回 AppError。
+- Repository 层位于 `internal/repository/`，封装 GORM 数据访问。
+- Model 层位于 `internal/model/`，维护 GORM 模型、请求结构和响应结构。
+- Middleware 层位于 `internal/middleware/`，处理鉴权、日志、跨域等横切逻辑。
+- Subscription 层位于 `internal/subscription/`，负责 Clash/mihomo YAML 订阅输出。
+
+## 前端与路由
+
+前端使用 Vue 3 + Vite + Element Plus + Alova + Pinia + Vue Router 4。
+
+- 用户路由包括 `/login`、`/register`、`/`、`/subscription`、`/orders`、`/plans`、`/redeem`、`/profile`。
+- 管理后台路由包括 `/admin/login`、`/admin`、`/admin/plans`、`/admin/node-groups`、`/admin/nodes`、`/admin/relays`、`/admin/users`、`/admin/orders`、`/admin/redeem-codes`、`/admin/subscription-tokens`、`/admin/logs`、`/admin/node-operations`、`/admin/subscription-settings`。
+- 路由守卫通过 `requiresAuth`、`requiresAdmin`、`guest` meta 标记和 `beforeEach` 执行。
+- 接口调用应通过 `frontend/src/api/request.js` 或专门 API 适配层收口，避免页面内散落原生 `fetch`。
+
+## 鉴权机制
+
+系统使用 JWT 双 Token。
+
+- Access Token 放在 `Authorization: Bearer` 请求头，默认 24 小时过期。
+- Refresh Token 放在 HttpOnly Cookie `refresh_token`，默认 7 天过期。
+- 刷新和退出必须使旧 Refresh Token 失效，避免长期可复用。
+- API 统一返回 `{success, message, code, data}` 格式。
+
+## 核心数据表
+
+当前核心表包括 `users`、`plans`、`node_groups`、`plan_node_groups`、`nodes`、`node_hosts`、`user_subscriptions`、`subscription_tokens`、`refresh_tokens`、`orders`、`payment_records`、`traffic_snapshots`、`node_access_tasks`、`usage_ledgers`、`redeem_codes`、`relays`、`relay_backends`、`relay_config_tasks`、`relay_traffic_snapshots`、`site_settings`、`operation_logs`、`deployment_logs`、`node_runtime_metrics`、`node_health_checks`。
+
+数据库迁移文件位于 `migrations/*.up.sql`，使用 golang-migrate 执行。
+
 ## 构建、测试与开发命令
 
-- `make build`：构建 Go 二进制到 `bin/`。
+- `cp .env.example .env`：首次配置环境变量。
+- `docker-compose up -d mysql`：启动 MySQL。
+- `make migrate`：基于 `MIGRATE_DATABASE_URL` 执行 SQL 迁移。
 - `make api`：启动 API 服务，即 `go run ./cmd/api`。
 - `make worker`：启动后台定时任务。
 - `make seed`：运行数据库种子工具。
-- `make migrate`：基于 `MIGRATE_DATABASE_URL` 执行 SQL 迁移。
 - `make frontend`：启动 Vite 前端开发服务器。
 - `make frontend-build`：构建前端产物到 `web/static`。
 - `go test ./...`：运行全部后端测试。
+- `go test ./internal/service/... -v`：运行指定 service 包测试。
 - `cd frontend && npm run build`：验证前端生产构建。
+- `make build`：构建 Go 二进制到 `bin/`。
+- `make docker`：执行 `docker-compose build`。
 - `make up` / `make down`：启动或停止 Docker Compose 服务。
-- 当前运行环境使用 `docker-compose` 命令；Makefile 默认 `COMPOSE ?= docker-compose`，如目标环境只支持 Compose v2 子命令，可显式执行 `COMPOSE="docker compose" make up`。
+- `docker-compose config --services`：校验 Compose 服务配置。
+
+当前运行环境使用 `docker-compose` 命令；Makefile 默认 `COMPOSE ?= docker-compose`，如目标环境只支持 Compose v2 子命令，可显式执行 `COMPOSE="docker compose" make up`。
 
 ## 编码风格与命名规范
 
-Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优先使用 `Test{功能}_{场景}_{预期}`，例如 `TestAuthService_Register_Success`。
-
-前端使用 Vue 单文件组件、Composition API 和 Element Plus，缩进为 2 个空格；现有 JavaScript 风格不使用分号。接口调用应通过 `frontend/src/api/request.js` 或专门的 API 适配层收口，避免页面内散落原生 `fetch`。
+- Go 代码必须使用 `gofmt`。
+- 包名保持短小、全小写。
+- 每个代码文件前 10 行内写功能简介。
+- 复杂业务逻辑、事务处理、并发控制等代码应添加必要注释，但不要添加无意义注释。
+- 统一错误处理使用 `platform/response.AppError`。
+- Handler 不写业务逻辑，只做参数解析、Service 调用、响应写入。
+- Service 层事务操作返回 AppError。
+- v1 不引入 Redis。
+- 前端使用 Vue 单文件组件、Composition API 和 Element Plus，缩进为 2 个空格；现有 JavaScript 风格不使用分号。
+- 测试命名优先使用 `Test{功能}_{场景}_{预期}`，例如 `TestAuthService_Register_Success`。
 
 ## 测试要求
 
-后端测试使用 Go testing 与 `stretchr/testify`。修改 service、repository、handler、middleware、subscription、scheduler 等核心包时，应补充对应测试。提交前至少运行 `go test ./...`。涉及事务、鉴权、token、流量计费、节点任务处理的改动，需要增加聚焦测试。核心业务路径目标覆盖率不低于 80%。
+- 后端测试使用 Go testing 与 `stretchr/testify`。
+- 修改 service、repository、handler、middleware、subscription、scheduler 等核心包时，应补充对应测试。
+- Service 层优先写单元测试，Repository 层写集成测试，Handler 层写 HTTP 端到端测试。
+- 涉及事务、鉴权、token、流量计费、节点任务处理的改动，需要增加聚焦测试。
+- 每完成一项功能开发或 bug 修复，应立即编写对应测试并运行通过，然后再进行下一项工作。
+- 提交前至少运行 `go test ./...`，核心业务路径目标覆盖率不低于 80%。
+- 涉及前端改动时运行 `cd frontend && npm run build`。
+- 涉及关键用户路径、节点部署、订阅输出、管理后台页面时运行 Playwright smoke。
+
+## 文档要求
+
+- 文档是正式交付物，代码、测试、文档三者同步完成才算完成。
+- 文档目录名、文件名统一使用中文。
+- 每个自然日需要在 `文档/每日记录/` 下新增或更新当天日报，命名为 `YYYY-MM-DD-日报.md`。
+- 任何影响接口、数据库、部署方式、安全策略、协议字段、订阅输出或运营流程的变更必须同步更新 `开发方案.md` 与 `文档/` 中对应说明。
+- 排查中无法复现或依赖真实环境的验证条件，应记录到文档或测试报告中。
 
 ## Agent 协作注意
 
-修改前先阅读相邻实现和 `文档/代码审查/代码审查报告.md`，按既有分层处理问题：handler 只做参数和响应，service 放业务规则，repository 封装数据库访问。不要覆盖本地 `.env`、构建产物或用户未说明的改动。
+- 所有回复用中文。
+- 不需要反复询问是否继续，用户要暂停时会主动说。
+- 禁止在未完成时停下来问“是否继续”，必须持续推进直到任务完成，除非用户主动说暂停或必须等待外部信息。
+- 修改前先阅读相邻实现和 `文档/代码审查/代码审查报告.md`，按既有分层处理问题。
+- 不要覆盖本地 `.env`、构建产物或用户未说明的改动。
+- 排查时优先使用 `rg`、`go test ./...`、`npm run build` 和 `docker-compose config --services`。
+- 若用户明确允许更新本地配置，修改后必须重新运行 Compose 配置校验。
 
-排查时优先使用 `rg`、`go test ./...`、`npm run build` 和 `docker-compose config --services`，并在文档中记录无法复现的验证条件。
-涉及协议字段、迁移、部署命令或安全策略时，同步更新 `文档/` 中对应说明，保持记录可追踪。
-若用户明确允许更新本地配置，修改后必须重新运行 Compose 配置校验。
+## 唯一规则文件
+
+- 本仓库唯一规则文件为 `AGENTS.md`。
+- 后续不要重新创建其他规则文件，也不要再添加多规则文件同步要求。
+- 修改规则时只更新 `AGENTS.md`，并按影响范围同步更新 `开发方案.md` 和 `文档/` 中对应文档。
+- 若某条规则只适用于特定工具或 agent，应在 `AGENTS.md` 中明确适用范围，避免冲突。
 
 ## 套餐与基础套餐规则
 
@@ -70,16 +176,22 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - 订阅生成时必须按节点流量池过滤：某个流量池剩余为 0 时，该池节点和对应中转线路不得继续出现在订阅里；另一个池有剩余时仍可继续下发。
 - 节点用户同步必须支持按流量池下发。普通流量超额只能对普通池节点下发 `DISABLE_USER`，家宽流量超额只能对家宽池节点下发 `DISABLE_USER`。
 - 后台和用户侧展示必须同时展示普通流量与家宽流量；旧字段继续展示普通流量，新增结构用于展示完整双池信息。
+- 修改双流量池字段、节点流量池归属、`/api/agent/traffic` 扣量逻辑、订阅过滤或套餐展示时，必须同步更新 `AGENTS.md`、`开发方案.md`、接口文档、节点代理文档和运维手册，并运行后端测试、前端构建和 Playwright smoke。
 
 ## 节点 Reality 与订阅联调规则
 
 - 订阅输出配置由后台 `/admin/subscription-settings` 管理，存储在 `site_settings.setting_key=subscription_config`；`SUBSCRIPTION_PROFILE_NAME` 仅作为未配置时的默认订阅名称回退。
 - Clash/mihomo 订阅文件名、`profile-title`、自定义 `rules`、`profile-update-interval`、`profile-web-page-url` 和 `subscription-userinfo` 用量头必须由订阅配置统一控制；规则为空时必须回退到 `GEOIP,CN,DIRECT` 与 `MATCH,PROXY`，缺少兜底规则时必须自动追加 `MATCH,PROXY`。
+- 节点国家/地区必须使用结构化字段 `nodes.region_code`、`nodes.region_name`、`nodes.region_flag`，后台节点新增、编辑和一键部署都应允许选择内置全球常用地区库；地区库使用 ISO/地区缩写和国旗，订阅节点名前的国旗来自该字段，不得再依赖节点名称关键词猜测。
+- 订阅节点命名由订阅配置 `node_name_template` 控制，支持 `{{flag}}`、`{{name}}`、`{{region}}`、`{{code}}`、`{{index}}`、`{{transport}}`、`{{pool}}`；没有明确地区时不得强行追加默认国旗。
+- 订阅分组由后台订阅配置 `proxy_groups` 手动维护，管理员可自定义分组名称、类型和节点 ID 列表；订阅生成必须按配置输出 Clash/mihomo `proxy-groups`。自动测速只使用 `url-test`，故障转移 `fallback` 不作为当前功能输出。
+- 订阅公开展示和客户端导入链接必须使用 `/sub/{token}`，不得再展示 `/clash`、`/base64` 或 `/plain` 后缀；服务端不得保留带后缀订阅下载入口。
 - `subscription-userinfo` 必须使用用户当前有效订阅的普通池与家宽池合计用量和总量生成，只作为客户端展示信息，不参与扣费；扣费仍以 `usage_ledgers` 和订阅双流量池字段为准。
-- 修改订阅配置、订阅响应头、Clash 规则输出或订阅配置页面时，必须同步更新三份规则文件、`开发方案.md`、订阅接口文档、管理接口文档和页面清单，并运行 `go test ./...`、前端构建和 Playwright smoke。
+- 修改订阅配置、订阅响应头、Clash 规则输出或订阅配置页面时，必须同步更新 `AGENTS.md`、`开发方案.md`、订阅接口文档、管理接口文档和页面清单，并运行 `go test ./...`、前端构建和 Playwright smoke。
 - 涉及 VLESS + Reality 节点、一键部署、订阅生成或节点同步时，必须确认 `nodes.server_name`、`nodes.public_key`、`nodes.short_id` 与节点 `/usr/local/etc/xray/config.json` 中 `realitySettings.serverNames[0]`、`publicKey` 或由 `privateKey` 派生的 PublicKey、`shortIds[0]` 一致。
 - 一键部署完成后必须自动读取节点 Xray Reality 参数并写回中心节点记录；如果同步失败，应让部署失败并清理本次创建的节点记录，不能留下可导入但不可用的节点。
 - 排查“订阅可导入但节点无信号”时，按顺序检查：订阅 URL 返回 200、节点 443/TCP 可达、Reality `sni/pbk/sid` 是否一致、用户 UUID 是否存在于节点 Xray `clients`、Xray 是否有可用 `outbounds`。
+- 节点运营中心显示健康只代表心跳、端口、流量上报和负载等观测项正常，不代表该节点已经包含所有可见活跃订阅用户 UUID；若客户端无信号但运营中心正常，必须检查 `node_access_tasks` 和远端 Xray `clients`，必要时通过 `POST /api/admin/nodes/:id/resync-users` 或后台“同步用户”按钮重下发授权。
 - 修改节点协议字段、Xray 配置模板、node-agent 同步逻辑或订阅输出格式后，除 `go test ./...` 外，还要用真实订阅链接或 Xray 客户端验证节点能出站，并同步更新 `开发方案.md` 与 `文档/`。
 - 修改出口节点流量统计、`/api/agent/traffic` 或 node-agent 上报逻辑时，必须保留本地流量队列、`collected_at` 入账和乱序旧批次跳过语义；验证项至少包含 `go test ./...`、node-agent 队列重放测试和真实节点上报状态。
 - `nodes.last_traffic_report_at` 表示中心收到流量报告的时间，`nodes.last_traffic_success_at` 表示成功处理到的节点采集时间，不得混用。
@@ -93,8 +205,7 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - 管理后台新增节点和一键部署允许多选传输模式；单选时仍创建一条 `nodes`，多选时按每种传输模式创建一条逻辑 `nodes` 线路。
 - 同一 IP 同时选择 TCP 与 XHTTP 时必须使用不同端口；默认 TCP 443、XHTTP 8443，不能在同一个 Xray inbound 上混用两种 network。
 - 端口冲突必须按监听端点 `listen_ip:port` 判定，不得只按端口全局去重；多 IP 服务器允许不同公网 IP 使用相同端口，例如 `IP-A:443` 与 `IP-B:443`，但同一 `listen_ip` 下不能有两条逻辑节点占用同一端口。管理 API 新增和编辑节点必须在后端校验同一 `node_host_id` 或同一 `agent_base_url` 下的监听端点，`0.0.0.0` / `::` 视为通配监听，不能只依赖前端提示。
-- 修改 XHTTP 字段、订阅格式、Xray `xhttpSettings` 或 node-agent 用户同步时，必须同步更新三份规则文件、`开发方案.md` 和相关接口/部署文档，并运行后端测试、前端构建和 Playwright smoke。
-- 修改双流量池字段、节点流量池归属、`/api/agent/traffic` 扣量逻辑、订阅过滤或套餐展示时，必须同步更新三份规则文件、`开发方案.md`、接口文档、节点代理文档和运维手册，并运行后端测试、前端构建和 Playwright smoke。
+- 修改 XHTTP 字段、订阅格式、Xray `xhttpSettings` 或 node-agent 用户同步时，必须同步更新 `AGENTS.md`、`开发方案.md` 和相关接口/部署文档，并运行后端测试、前端构建和 Playwright smoke。
 
 ## 多出口 IP 与 multi_exit 规则
 
@@ -108,7 +219,7 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - multi_exit 对中心仍必须按 `node_id` 分别心跳、领取任务、上报任务结果和用户级流量；中心账本、套餐授权和订阅生成继续以 `nodes.id` 为归属。
 - multi_exit 写入 Xray clients 时必须使用节点内部分隔的统计 email，避免同一用户跨多个逻辑节点的 Xray Stats 累计值混在一起；上报中心前再还原为原始 `xray_user_key`。
 - 出口节点一键部署必须是真一键：部署成功后自动绑定管理员选择的节点分组、触发已有活跃订阅用户同步；选择替换旧角色时必须自动停用同服务器旧 relay 和旧出口记录，不能依赖人工再去后台补分组或停旧线路。
-- 修改多 IP 扫描、`node_hosts`、multi_exit 协议、Xray 多 inbound/outbound 模板或流量归属逻辑时，必须同步更新 `开发方案.md`、节点代理部署指南、管理接口文档和规则文件，并运行 `go test ./...`、前端构建和 Playwright smoke。
+- 修改多 IP 扫描、`node_hosts`、multi_exit 协议、Xray 多 inbound/outbound 模板或流量归属逻辑时，必须同步更新 `AGENTS.md`、`开发方案.md`、节点代理部署指南和管理接口文档，并运行 `go test ./...`、前端构建和 Playwright smoke。
 
 ## 直连与中转演进规则
 
@@ -126,7 +237,7 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - 中转转发组件第一版固定默认 HAProxy；node-agent relay 模式必须先执行 `haproxy -c` 校验，成功后再 reload，失败时保留上一份可用配置。
 - 中转节点一键部署必须是真一键：管理员选择出口节点和监听端口后，部署流程必须自动创建 `relay_backends`、下发并等待 HAProxy reload 成功；选择替换旧角色时必须自动停用同服务器旧出口记录，不能把“部署 agent 成功但未绑定后端”视为成功。
 - 隐藏出口 IP 时，订阅只下发中转线路，并在出口节点防火墙只放行中转服务器 IP。
-- 涉及中转数据表、node-agent relay 模式、订阅输出或部署流程时，必须同步更新 `开发方案.md`、`文档/中转/中转设计.md`、接口文档和架构决策。
+- 涉及中转数据表、node-agent relay 模式、订阅输出或部署流程时，必须同步更新 `AGENTS.md`、`开发方案.md`、`文档/中转/中转设计.md`、接口文档和架构决策。
 
 ## Agent 中心地址容灾规则
 
@@ -135,13 +246,7 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - 一键部署出口节点和中转节点必须提供“备用中心地址”输入，并把主中心和备用中心归一化写入 agent 容器环境变量；生产主/备中心入口通过未提交的环境变量配置，公开仓库不得写真实域名或 IP。后端可根据环境变量中的入口集合自动补齐主备地址。
 - 控制平台迁移或域名/IP 不可用时，优先依赖 agent 多中心自动切换；最后兜底才由管理员通过后台“修复中心”发起中心 SSH 到节点机器，重建 Docker agent 或更新 systemd drop-in 并重启 agent。
 - SSH 兜底接口为 `POST /api/admin/nodes/repair-center`，可指定 `node_id`、`node_host_id` 或 `relay_id` 等待新心跳确认；该接口只能保存脱敏部署日志，不得记录 SSH 密码、完整 Token 或私钥。
-- 修改 `CENTER_SERVER_URLS`、一键部署中心地址、SSH 兜底修复脚本或 agent 中心切换逻辑时，必须同步更新三份规则文件、`开发方案.md`、节点代理部署指南、管理接口文档、运维手册和页面清单，并运行 `go test ./...`、前端构建、Compose 配置校验和 Playwright smoke。
-
-## 规则文件同步要求
-
-- 本仓库规则文件包括 `CLAUDE.md`、`AGENTS.md`、`QWEN.md`。
-- 修改其中任意一个规则文件时，必须同步检查并更新另外两个规则文件，确保关键约束、流程和口径一致。
-- 若某条规则只适用于特定工具或 agent，应在三份文件中明确适用范围，避免互相冲突。
+- 修改 `CENTER_SERVER_URLS`、一键部署中心地址、SSH 兜底修复脚本或 agent 中心切换逻辑时，必须同步更新 `AGENTS.md`、`开发方案.md`、节点代理部署指南、管理接口文档、运维手册和页面清单，并运行 `go test ./...`、前端构建、Compose 配置校验和 Playwright smoke。
 
 ## 日志中心与审计规则
 
@@ -152,7 +257,7 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - 部署日志必须记录一键部署出口节点和中转节点的结果、耗时、步骤明细、目标服务器 IP、操作者 IP、逻辑节点/中转/后端记录 ID。
 - 所有结构化日志必须记录可用 IP 信息：`client_ip` 或 `operator_ip`，并尽量保留 `X-Forwarded-For`、`X-Real-IP`、`User-Agent` 以便排障。
 - 日志中不得写入密码、完整 Token、JWT、数据库连接串、SSH 私钥、Reality 私钥；部署请求只能保存脱敏摘要，例如 `node_token_provided` / `relay_token_provided` 布尔值。
-- 修改日志表结构、日志记录入口、日志页面或一键部署日志摘要时，必须同步更新 `开发方案.md`、管理接口文档、运维手册和页面清单，并运行 `go test ./...`、前端构建和 Playwright smoke。
+- 修改日志表结构、日志记录入口、日志页面或一键部署日志摘要时，必须同步更新 `AGENTS.md`、`开发方案.md`、管理接口文档、运维手册和页面清单，并运行 `go test ./...`、前端构建和 Playwright smoke。
 
 ## 节点运营中心规则
 
@@ -160,8 +265,9 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - 节点运营中心 v1 只做观测和诊断：不得自动停用节点、不得自动隐藏订阅线路、不得直接触发用户禁用；任何自动调度或摘除策略必须作为后续功能单独设计。
 - node-agent 心跳运行指标必须保持向后兼容；旧 agent 不上报 `runtime_metric` 时，中心仍要正常处理心跳、任务领取和流量上报。
 - 健康检查状态必须综合心跳、TCP 端口、流量上报、Xray 运行状态和负载指标。TCP 端口可达只能代表端口通，不得宣称真实 VLESS/Reality/XHTTP 客户端 100% 可用。
+- 健康检查不得把“节点端口可达”误判为“用户授权已同步”；运营中心 v1 不校验远端 Xray `clients` 是否包含每个活跃订阅 UUID，用户授权一致性由节点访问任务和手动重同步接口处理。
 - 节点运营中心流量排行必须来自 `usage_ledgers`，同时区分真实流量 `delta_*` 与扣费流量 `billed_*`，不能用订阅已用量反推节点排行。
-- 修改 node-agent 心跳指标、`node_runtime_metrics`、`node_health_checks`、健康评分、节点运营页面或运营接口时，必须同步更新三份规则文件、`开发方案.md`、管理接口文档、节点代理接口文档、运维手册和页面清单，并运行 `go test ./...`、前端构建和 Playwright smoke。
+- 修改 node-agent 心跳指标、`node_runtime_metrics`、`node_health_checks`、健康评分、节点运营页面或运营接口时，必须同步更新 `AGENTS.md`、`开发方案.md`、管理接口文档、节点代理接口文档、运维手册和页面清单，并运行 `go test ./...`、前端构建和 Playwright smoke。
 
 ## 用户级限速规则
 
@@ -170,24 +276,58 @@ Go 代码必须使用 `gofmt`。包名保持短小、全小写。测试命名优
 - Xray-core 当前不提供稳定的原生按用户 Mbps 限速能力，node-agent v1 必须基于 Xray Stats 的用户级累计流量做滑动窗口平均限速：超过阈值时临时从对应 VLESS inbound 摘除用户，窗口结束后自动恢复用户。
 - 限速只控制出口节点用户连接，不改变订阅生成、不改变套餐流量扣费和 `usage_ledgers` 入账；中转节点不执行用户限速，用户经中转访问时仍由出口节点限速。
 - node-agent 必须把限速策略和运行状态持久化到本地状态文件，重启后继续生效；状态文件不得包含中心 Token、订阅 Token、SSH 密码或 Reality 私钥。
-- 修改 `speed_limit_bps`、限速任务 payload、node-agent 限速执行器或用户订阅编辑页时，必须同步更新三份规则文件、`开发方案.md`、管理接口文档、节点代理接口文档、运维手册和页面清单，并运行 `go test ./...`、前端构建和 Playwright smoke。
+- 修改 `speed_limit_bps`、限速任务 payload、node-agent 限速执行器或用户订阅编辑页时，必须同步更新 `AGENTS.md`、`开发方案.md`、管理接口文档、节点代理接口文档、运维手册和页面清单，并运行 `go test ./...`、前端构建和 Playwright smoke。
 
-## 测试节点信息
+## 测试节点信息与敏感数据
 
-真实节点、控制面入口、备用入口、节点 ID、Reality 公钥、SSH 账号和 Token 属于生产敏感信息，不得提交到 GitHub。公开仓库只允许使用 `[REDACTED]`、`<primary-center-url>`、`<fallback-center-url>`、`<exit-node-ip>` 等占位符描述流程。
+- 真实节点、控制面入口、备用入口、节点 ID、Reality 公钥、SSH 账号和 Token 属于生产敏感信息，不得提交到 GitHub。
+- 公开仓库只允许使用 `[REDACTED]`、`<primary-center-url>`、`<fallback-center-url>`、`<exit-node-ip>` 等占位符描述流程。
+- 若需要真实联调信息，应保存在未提交的本地运维密钥文件或密码管理器中；不得写入 `AGENTS.md`、`CHANGELOG.md`、`开发方案.md`、`文档/` 或截图。
+- 当前生产库没有启用中的中转节点；`relays` 与 `relay_backends` 均为空。若后续重新启用中转，必须通过后台 API 一键部署，并只在私有运维记录中维护真实服务器信息。
 
-三份规则文件必须同步维护本节。若需要真实联调信息，应保存在未提交的本地运维密钥文件或密码管理器中；不得写入 `AGENTS.md`、`CLAUDE.md`、`QWEN.md`、`CHANGELOG.md`、`开发方案.md`、`文档/` 或截图。
+## 一键部署规则
 
-当前生产库没有启用中的中转节点；`relays` 与 `relay_backends` 均为空。若后续重新启用中转，必须通过后台 API 一键部署，并只在私有运维记录中维护真实服务器信息。
+- 一台物理服务器只保留一个当前角色的 node-agent；旧 systemd/relay agent 不得与当前出口角色并存。
+- 一键部署镜像包由 `make node-agent-image` 生成到 `deploy/artifacts/node-agent-image.tar.gz`。
+- Docker Compose 会把 `deploy/artifacts` 挂载到 API 容器 `/root/raypilot-artifacts`，供部署接口使用。
+- 一键部署必须以 Docker 容器闭环成功为准：部署前做镜像包和目标服务器预检，清理旧角色后必须检查本次节点/中转端口没有被 nginx、宝塔或其他进程占用，并自动放行目标机 UFW/firewalld 上的节点或中转 TCP 端口。
+- 部署中必须等待 Docker 可用、容器持续运行、Xray/HAProxy 配置生成、agent 心跳回连，并确认节点端口由 `xray` 监听、中转端口由 `haproxy` 监听，不能只用“端口有人监听”当成功。
+- 失败时必须采集容器日志和端口诊断，并清理本次创建的容器、节点/中转记录、后端绑定和配置任务。
+- 单出口部署必须向容器写入 `NODE_PORT`，node-agent 生成 Xray 配置时按后台端口监听，不能固定 443。
+- 部署前必须清理旧 Xray/HAProxy 配置，避免脏服务器复用旧配置。
+- 若云厂商安全组另有入站限制，仍需在云侧放行 TCP 443、8443 或自定义监听端口。
 
-部署方式：一台物理服务器只保留一个当前角色的 node-agent；旧 systemd/relay agent 不得与当前出口角色并存。一键部署镜像包由 `make node-agent-image` 生成到 `deploy/artifacts/node-agent-image.tar.gz`，Docker Compose 会把 `deploy/artifacts` 挂载到 API 容器 `/root/raypilot-artifacts` 供部署接口使用。一键部署必须以 Docker 容器闭环成功为准：部署前做镜像包和目标服务器预检，清理旧角色后必须检查本次节点/中转端口没有被 nginx、宝塔或其他进程占用，并自动放行目标机 UFW/firewalld 上的节点或中转 TCP 端口；部署中等待 Docker 可用、容器持续运行、Xray/HAProxy 配置生成、agent 心跳回连，并确认节点端口由 `xray` 监听、中转端口由 `haproxy` 监听，不能只用“端口有人监听”当成功；失败时必须采集容器日志和端口诊断，并清理本次创建的容器、节点/中转记录、后端绑定和配置任务。单出口部署必须向容器写入 `NODE_PORT`，node-agent 生成 Xray 配置时按后台端口监听，不能固定 443。部署前必须清理旧 Xray/HAProxy 配置，避免脏服务器复用旧配置。若云厂商安全组另有入站限制，仍需在云侧放行 TCP 443、8443 或自定义监听端口。
+## 开发进度记录
+
+- 第 1 阶段：项目初始化与文档骨架，已完成。
+- 第 2 阶段：认证和用户，注册、登录、Token 刷新、用户首页，已完成。
+- 第 3 阶段：套餐、节点、后台基础，CRUD 与管理页面，已完成。
+- 第 4 阶段：订阅生成与节点授权，Clash/mihomo YAML 与 NodeAccessTask，已完成。
+- 第 5 阶段：兑换码，生成、兑换、记录管理，已完成。
+- 第 6 阶段：订单与支付骨架，表结构与接口骨架，已完成。
+- 第 7 阶段：流量采集，快照差值、配额控制、节点联动，已完成。
+- 第 8 阶段：运维、测试与文档收口，已完成。
+
+## 已修复审查问题
+
+- 兑换码接口 `/api/redeem` 未挂 JWTAuth 中间件，已修复。
+- JWT 默认密钥应改为启动时 panic，已修复。
+- `migrations/001_init.up.sql` 缺少 `refresh_tokens` 表创建，已修复。
+- 前端 `Plans.vue` 缺少 `ElMessageBox` 导入，已修复。
+- Logout/RefreshToken 不轮转、不使旧 token 失效，已修复。
+- Worker 过期订阅扫描不创建 `DISABLE_USER` 任务，已修复。
+- `ProcessTrafficReport` 和任务创建等错误被静默丢弃，已改为日志记录。
+- `docker-compose.yml` 硬编码数据库密码且暴露 3306 端口，已移除默认密码回退，3306 默认不暴露。
 
 ## 提交与 PR 要求
 
-当前工作区没有可用 Git 历史，因此提交信息建议使用简洁祈使句，例如 `fix subscription token validation` 或 `add redeem code expiry check`。
+当前工作区没有可用 Git 历史时，提交信息建议使用简洁祈使句，例如 `fix subscription token validation` 或 `add redeem code expiry check`。
 
-PR 应包含变更摘要、测试结果、关联任务或问题背景。前端改动需附截图或说明影响页面。涉及数据库迁移、接口契约、部署方式或安全行为的变更，必须在 PR 中明确标注，并同步更新 `文档/`。
+PR 应包含变更摘要、测试结果、关联任务或问题背景。前端改动需附截图或说明影响页面。涉及数据库迁移、接口契约、部署方式或安全行为的变更，必须在 PR 中明确标注，并同步更新 `开发方案.md` 与 `文档/`。
 
 ## 安全与配置注意事项
 
-不要提交 `.env`、密钥、生成的二进制、覆盖率文件、`frontend/node_modules` 或无意更新的构建产物。新环境从 `.env.example` 开始配置，务必设置强 `JWT_SECRET`。Docker Compose 场景下，`DATABASE_URL` 与 `MIGRATE_DATABASE_URL` 都应指向 Compose 内的 MySQL 服务名，而不是 `127.0.0.1`。
+- 不要提交 `.env`、密钥、生成的二进制、覆盖率文件、`frontend/node_modules` 或无意更新的构建产物。
+- 新环境从 `.env.example` 开始配置，务必设置强 `JWT_SECRET`。
+- Docker Compose 场景下，`DATABASE_URL` 与 `MIGRATE_DATABASE_URL` 都应指向 Compose 内的 MySQL 服务名，而不是 `127.0.0.1`。
+- 仅通过环境变量加载配置，关键变量见 `.env.example`；不要引入配置中心。

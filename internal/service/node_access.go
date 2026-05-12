@@ -32,6 +32,15 @@ type subscriptionTaskFilter struct {
 	TrafficPool string
 }
 
+// NodeUserResyncResult 表示单个节点用户授权重同步结果。
+type NodeUserResyncResult struct {
+	NodeID        uint64
+	GroupIDs      []uint64
+	TargetedCount int
+	QueuedCount   int
+	SkippedCount  int
+}
+
 // NewNodeAccessService 创建节点访问同步服务。
 func NewNodeAccessService(taskRepo *repository.NodeAccessTaskRepository, nodeRepo *repository.NodeRepository, planRepo *repository.PlanRepository, subRepo *repository.SubscriptionRepository, userRepo *repository.UserRepository, cfg *config.Config) *NodeAccessService {
 	return &NodeAccessService{
@@ -137,6 +146,51 @@ func (s *NodeAccessService) TriggerForNodeGroupNodes(ctx context.Context, groupI
 		}
 	}
 	return lastErr
+}
+
+// ResyncVisibleSubscriptionsForNode 为节点当前可见分组下的活跃订阅重下发用户授权。
+func (s *NodeAccessService) ResyncVisibleSubscriptionsForNode(ctx context.Context, nodeID uint64) (*NodeUserResyncResult, error) {
+	node, err := s.nodeRepo.FindByID(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("find node %d: %w", nodeID, err)
+	}
+	result := &NodeUserResyncResult{NodeID: nodeID}
+	if !node.IsEnabled {
+		return result, nil
+	}
+
+	groupIDs, err := s.nodeRepo.FindGroupIDsByNodeID(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("find node %d groups: %w", nodeID, err)
+	}
+	result.GroupIDs = uniqueUint64s(groupIDs)
+	if len(result.GroupIDs) == 0 {
+		return result, nil
+	}
+
+	subs, err := s.listActiveSubscriptionsForGroups(ctx, result.GroupIDs)
+	if err != nil {
+		return nil, err
+	}
+	result.TargetedCount = len(subs)
+	var lastErr error
+	for _, sub := range subs {
+		exists, err := s.taskRepo.HasOpenTask(ctx, nodeID, sub.ID, "UPSERT_USER")
+		if err != nil {
+			lastErr = fmt.Errorf("check open node access task: %w", err)
+			continue
+		}
+		if exists {
+			result.SkippedCount++
+			continue
+		}
+		if err := s.createTaskForNode(ctx, nodeID, sub.UserID, sub.ID, "UPSERT_USER"); err != nil {
+			lastErr = err
+			continue
+		}
+		result.QueuedCount++
+	}
+	return result, lastErr
 }
 
 // createTasksForSubscription 为订阅创建节点访问任务。

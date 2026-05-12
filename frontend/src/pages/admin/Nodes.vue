@@ -44,6 +44,9 @@
             >
             <el-table-column prop="id" label="线路 ID" width="80" />
             <el-table-column prop="name" label="线路名称" min-width="170" />
+            <el-table-column label="地区" width="110">
+              <template #default="{ row: line }">{{ regionLabel(line) }}</template>
+            </el-table-column>
             <el-table-column label="入口" min-width="150">
               <template #default="{ row: line }">{{ line.host }}:{{ line.port }}</template>
             </el-table-column>
@@ -82,6 +85,7 @@
             <el-table-column label="操作" width="150" fixed="right">
               <template #default="{ row: line }">
                 <el-button size="small" @click="showEditDialog(line)">编辑</el-button>
+                <el-button size="small" type="success" :loading="resyncingNodeIds.has(line.id)" @click="handleResyncLine(line)">同步用户</el-button>
                 <el-button size="small" type="danger" @click="handleDelete(line)">删除</el-button>
               </template>
             </el-table-column>
@@ -148,6 +152,7 @@
       <el-table-column label="操作" width="340" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="showNodeServerEdit(row)">编辑</el-button>
+          <el-button size="small" type="success" :loading="isResyncingServer(row)" @click="handleResyncServer(row)">同步用户</el-button>
           <el-button size="small" @click="showAddResidentialForServer(row)">加家宽</el-button>
           <el-button size="small" type="warning" @click="showRepairCenterDialog(row)">修复中心</el-button>
           <el-button size="small" type="danger" @click="handleDeleteServer(row)">删除</el-button>
@@ -160,6 +165,11 @@
       <el-form :model="form" :rules="rules" ref="formRef" label-width="120px">
         <el-form-item label="节点名称" prop="name">
           <el-input v-model="form.name" />
+        </el-form-item>
+        <el-form-item label="国家/地区">
+          <el-select v-model="form.region_code" filterable clearable placeholder="选择订阅显示图标和缩写" style="width: 100%" @change="handleRegionChange(form)">
+            <el-option v-for="region in regionOptions" :key="region.code" :label="`${region.flag} ${region.name} (${region.code})`" :value="region.code" />
+          </el-select>
         </el-form-item>
         <el-form-item label="地址" prop="host">
           <el-input v-model="form.host" placeholder="例如：hk.example.com" />
@@ -296,6 +306,11 @@
         </el-form-item>
         <el-form-item label="节点名称" prop="node_name">
           <el-input v-model="deployForm.node_name" placeholder="可选，默认为 raypilot-node-IP" />
+        </el-form-item>
+        <el-form-item label="国家/地区">
+          <el-select v-model="deployForm.region_code" filterable clearable placeholder="选择订阅显示图标和缩写" style="width: 100%" @change="handleRegionChange(deployForm)">
+            <el-option v-for="region in regionOptions" :key="region.code" :label="`${region.flag} ${region.name} (${region.code})`" :value="region.code" />
+          </el-select>
         </el-form-item>
         <el-form-item label="中心服务地址" prop="center_url">
           <el-input v-model="deployForm.center_url" placeholder="例如：https://center.example.com" />
@@ -485,6 +500,9 @@
           >
           <el-table-column prop="id" label="线路 ID" width="80" />
           <el-table-column prop="name" label="线路名称" min-width="170" />
+          <el-table-column label="地区" width="110">
+            <template #default="{ row }">{{ regionLabel(row) }}</template>
+          </el-table-column>
           <el-table-column label="入口" min-width="150">
             <template #default="{ row }">{{ row.host }}:{{ row.port }}</template>
           </el-table-column>
@@ -507,6 +525,7 @@
           <el-table-column label="操作" width="150" fixed="right">
             <template #default="{ row }">
               <el-button size="small" @click="showEditDialog(row)">编辑</el-button>
+              <el-button size="small" type="success" :loading="resyncingNodeIds.has(row.id)" @click="handleResyncLine(row)">同步用户</el-button>
               <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
             </template>
           </el-table-column>
@@ -582,6 +601,7 @@ import { CircleCheck, CircleClose, Loading } from '@element-plus/icons-vue'
 
 const nodes = ref([])
 const nodeGroups = ref([])
+const regionOptions = ref([])
 const loading = ref(false)
 const dialogVisible = ref(false)
 const isEdit = ref(false)
@@ -597,9 +617,13 @@ const repairDialogVisible = ref(false)
 const repairFormRef = ref(null)
 const repairingCenter = ref(false)
 const repairSteps = ref([])
+const resyncingNodeIds = ref(new Set())
 
 const form = reactive({
   name: '',
+  region_code: '',
+  region_name: '',
+  region_flag: '',
   host: '',
   traffic_pool: 'normal',
   outbound_type: 'direct',
@@ -657,6 +681,9 @@ const deployForm = reactive({
   ssh_user: 'root',
   ssh_password: '',
   node_name: '',
+  region_code: '',
+  region_name: '',
+  region_flag: '',
   traffic_pool: 'normal',
   outbound_type: 'direct',
   udp_enabled: true,
@@ -798,6 +825,9 @@ async function handleDeploy() {
       ssh_user: deployForm.ssh_user,
       ssh_password: deployForm.ssh_password,
       node_name: deployForm.node_name,
+      region_code: deployForm.region_code,
+      region_name: deployForm.region_name,
+      region_flag: deployForm.region_flag,
       traffic_pool: deployForm.traffic_pool,
       outbound_type: deployForm.outbound_type,
       udp_enabled: deployForm.udp_enabled,
@@ -859,6 +889,22 @@ function lineModeLabel(mode) {
 
 function transportLabel(transport) {
   return transport === 'xhttp' ? 'XHTTP' : 'TCP'
+}
+
+function regionLabel(row) {
+  const flag = row?.region_flag || ''
+  const name = row?.region_name || row?.region_code || ''
+  return `${flag} ${name}`.trim() || '-'
+}
+
+function selectedRegion(code) {
+  return regionOptions.value.find((region) => region.code === code) || null
+}
+
+function handleRegionChange(target) {
+  const region = selectedRegion(target.region_code)
+  target.region_name = region?.name || ''
+  target.region_flag = region?.flag || ''
 }
 
 function portNumber(value) {
@@ -1115,6 +1161,9 @@ function maskProxyUrl(value) {
 function resetForm() {
   activeServerKey.value = ''
   form.name = ''
+  form.region_code = ''
+  form.region_name = ''
+  form.region_flag = ''
   form.host = ''
   form.traffic_pool = 'normal'
   form.outbound_type = 'direct'
@@ -1150,6 +1199,9 @@ function prefillAddDialogFromServer(server, defaults = {}) {
   resetForm()
   const first = server?.nodes?.[0] || {}
   form.name = defaults.name || `${server.name}-${defaults.traffic_pool === 'residential' ? '家宽' : '普通'}`
+  form.region_code = defaults.region_code || first.region_code || ''
+  form.region_name = defaults.region_name || first.region_name || ''
+  form.region_flag = defaults.region_flag || first.region_flag || ''
   form.host = first.host || server.management_ip || ''
   form.traffic_pool = defaults.traffic_pool || 'normal'
   form.outbound_type = defaults.outbound_type || 'direct'
@@ -1195,6 +1247,9 @@ function showEditDialog(row) {
   activeServerKey.value = server?.key || ''
   serverDialogVisible.value = false
   form.name = row.name
+  form.region_code = row.region_code || ''
+  form.region_name = row.region_name || ''
+  form.region_flag = row.region_flag || ''
   form.host = row.host
   form.traffic_pool = row.traffic_pool || 'normal'
   form.outbound_type = row.outbound_type || 'direct'
@@ -1245,6 +1300,9 @@ async function handleSave() {
     const primaryTransport = transports[0]
     const payload = {
       name: form.name,
+      region_code: form.region_code,
+      region_name: form.region_name,
+      region_flag: form.region_flag,
       host: form.host,
       traffic_pool: form.traffic_pool,
       outbound_type: form.outbound_type,
@@ -1298,6 +1356,72 @@ async function handleDelete(row) {
     if (err !== 'cancel') {
       ElMessage.error(err.message || '删除失败')
     }
+  }
+}
+
+function setNodeResyncing(ids, value) {
+  const next = new Set(resyncingNodeIds.value)
+  for (const id of ids || []) {
+    if (value) {
+      next.add(id)
+    } else {
+      next.delete(id)
+    }
+  }
+  resyncingNodeIds.value = next
+}
+
+function isResyncingServer(row) {
+  return (row.nodes || []).some((line) => resyncingNodeIds.value.has(line.id))
+}
+
+function formatResyncResult(result) {
+  const queued = result?.queued_count ?? 0
+  const skipped = result?.skipped_count ?? 0
+  const targeted = result?.targeted_count ?? 0
+  return `目标订阅 ${targeted} 个，新增任务 ${queued} 个，跳过 ${skipped} 个`
+}
+
+async function handleResyncLine(row) {
+  if (!row?.id) return
+  setNodeResyncing([row.id], true)
+  try {
+    const res = await adminApi.nodes.resyncUsers(row.id)
+    ElMessage.success(`${row.name || `节点 #${row.id}`} 用户同步已排队：${formatResyncResult(res.data)}`)
+  } catch (err) {
+    ElMessage.error(err.message || '用户同步失败')
+  } finally {
+    setNodeResyncing([row.id], false)
+  }
+}
+
+async function handleResyncServer(row) {
+  const lines = row.nodes || []
+  if (!lines.length) return
+  const ids = lines.map((line) => line.id)
+  setNodeResyncing(ids, true)
+  let queued = 0
+  let skipped = 0
+  let targeted = 0
+  const failed = []
+  try {
+    for (const line of lines) {
+      try {
+        const res = await adminApi.nodes.resyncUsers(line.id)
+        queued += res.data?.queued_count ?? 0
+        skipped += res.data?.skipped_count ?? 0
+        targeted += res.data?.targeted_count ?? 0
+      } catch (err) {
+        failed.push(`${line.name || line.id}：${err.message || '同步失败'}`)
+      }
+    }
+    if (failed.length) {
+      ElMessage.warning(`用户同步部分失败：新增任务 ${queued} 个，失败 ${failed.length} 条：${failed.join('；')}`)
+    } else {
+      ElMessage.success(`${row.name} 用户同步已排队：目标订阅 ${targeted} 个，新增任务 ${queued} 个，跳过 ${skipped} 个`)
+    }
+  } finally {
+    setNodeResyncing(ids, false)
   }
 }
 
@@ -1507,9 +1631,19 @@ async function fetchNodeGroups() {
   }
 }
 
+async function fetchRegions() {
+  try {
+    const res = await adminApi.nodes.regions()
+    regionOptions.value = res.data || []
+  } catch (err) {
+    ElMessage.error('获取国家/地区库失败')
+  }
+}
+
 onMounted(() => {
   fetchNodes()
   fetchNodeGroups()
+  fetchRegions()
 })
 </script>
 

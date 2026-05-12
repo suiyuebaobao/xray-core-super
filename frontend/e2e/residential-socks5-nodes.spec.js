@@ -226,19 +226,7 @@ test('multiple SOCKS5 upstreams create independent residential subscription line
     const token = subscriptionData.tokens?.[0]?.token
     expect(token).toBeTruthy()
 
-    const plainResponse = await request.get(`/sub/${token}/plain`)
-    expect(plainResponse.ok(), 'plain subscription download').toBeTruthy()
-    const plain = await plainResponse.text()
-    for (const name of expectedNames) {
-      expect(plain, `plain subscription contains ${name}`).toContain(name)
-    }
-    expect(countOccurrences(plain, 'vless://')).toBe(4)
-    expect(countOccurrences(plain, 'type=xhttp')).toBe(2)
-    expect(plain).toContain('path=%2Fhome-xhttp')
-    expect(plain).toContain('host=cdn.example.test')
-    expect(countOccurrences(plain, 'flow=xtls-rprx-vision')).toBe(0)
-
-    const clashResponse = await request.get(`/sub/${token}/clash`)
+    const clashResponse = await request.get(`/sub/${token}`)
     expect(clashResponse.ok(), 'clash subscription download').toBeTruthy()
     const clash = await clashResponse.text()
     for (const name of expectedNames) {
@@ -265,7 +253,7 @@ test('multiple SOCKS5 upstreams create independent residential subscription line
       },
     })
     expect(exhausted.subscription?.residential_used_traffic).toBe(gb(3))
-    const emptyResidentialResponse = await request.get(`/sub/${token}/plain`)
+    const emptyResidentialResponse = await request.get(`/sub/${token}`)
     expect(emptyResidentialResponse.ok(), 'exhausted residential pool hides residential-only nodes').toBeFalsy()
   } finally {
     await cleanupUser(request, adminToken, username, created.userId)

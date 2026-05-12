@@ -71,20 +71,35 @@ func (h *SiteConfigHandler) GetSubscriptionConfig(c *gin.Context) {
 
 func (h *SiteConfigHandler) UpdateSubscriptionConfig(c *gin.Context) {
 	var req struct {
-		ProfileName           string   `json:"profile_name"`
-		CustomRules           []string `json:"custom_rules"`
-		IncludeUserInfo       *bool    `json:"include_user_info"`
-		ProfileUpdateInterval uint     `json:"profile_update_interval"`
-		ProfileWebPageURL     string   `json:"profile_web_page_url"`
+		ProfileName           string                               `json:"profile_name"`
+		CustomRules           []string                             `json:"custom_rules"`
+		IncludeUserInfo       *bool                                `json:"include_user_info"`
+		ProfileUpdateInterval uint                                 `json:"profile_update_interval"`
+		ProfileWebPageURL     string                               `json:"profile_web_page_url"`
+		NodeNameTemplate      string                               `json:"node_name_template"`
+		IncludeRegionIcon     *bool                                `json:"include_region_icon"`
+		EnableURLTestGroup    *bool                                `json:"enable_url_test_group"`
+		HealthCheckURL        string                               `json:"health_check_url"`
+		URLTestInterval       uint                                 `json:"url_test_interval"`
+		ProxyGroups           []model.SubscriptionProxyGroupConfig `json:"proxy_groups"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.HandleError(c, response.ErrBadRequest)
 		return
 	}
 
-	includeUserInfo := true
+	def := model.DefaultSubscriptionConfig()
+	includeUserInfo := def.IncludeUserInfo
 	if req.IncludeUserInfo != nil {
 		includeUserInfo = *req.IncludeUserInfo
+	}
+	includeRegionIcon := def.IncludeRegionIcon
+	if req.IncludeRegionIcon != nil {
+		includeRegionIcon = *req.IncludeRegionIcon
+	}
+	enableURLTestGroup := def.EnableURLTestGroup
+	if req.EnableURLTestGroup != nil {
+		enableURLTestGroup = *req.EnableURLTestGroup
 	}
 	cfg := model.NormalizeSubscriptionConfig(model.SubscriptionConfig{
 		ProfileName:           req.ProfileName,
@@ -92,6 +107,12 @@ func (h *SiteConfigHandler) UpdateSubscriptionConfig(c *gin.Context) {
 		IncludeUserInfo:       includeUserInfo,
 		ProfileUpdateInterval: req.ProfileUpdateInterval,
 		ProfileWebPageURL:     req.ProfileWebPageURL,
+		NodeNameTemplate:      req.NodeNameTemplate,
+		IncludeRegionIcon:     includeRegionIcon,
+		EnableURLTestGroup:    enableURLTestGroup,
+		HealthCheckURL:        req.HealthCheckURL,
+		URLTestInterval:       req.URLTestInterval,
+		ProxyGroups:           req.ProxyGroups,
 	})
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -105,9 +126,13 @@ func (h *SiteConfigHandler) UpdateSubscriptionConfig(c *gin.Context) {
 	}
 
 	h.recordAdminOperation(c, "update_subscription_config", "success", "管理员更新订阅配置", map[string]interface{}{
-		"profile_name":      cfg.ProfileName,
-		"custom_rule_count": len(cfg.CustomRules),
-		"include_user_info": cfg.IncludeUserInfo,
+		"profile_name":          cfg.ProfileName,
+		"custom_rule_count":     len(cfg.CustomRules),
+		"include_user_info":     cfg.IncludeUserInfo,
+		"node_name_template":    cfg.NodeNameTemplate,
+		"include_region_icon":   cfg.IncludeRegionIcon,
+		"enable_url_test_group": cfg.EnableURLTestGroup,
+		"proxy_group_count":     len(cfg.ProxyGroups),
 	})
 	response.Success(c, cfg)
 }

@@ -36,13 +36,9 @@
       <el-table-column label="订阅链接" min-width="360">
         <template #default="{ row }">
           <div class="link-cell">
-            <div class="link-preview">{{ subscriptionUrl(row.token, row.subscription_format || 'clash') }}</div>
+            <div class="link-preview">{{ subscriptionUrl(row.token) }}</div>
             <div class="link-actions">
-              <el-radio-group v-model="row.subscription_format" size="small">
-                <el-radio-button value="clash">Clash</el-radio-button>
-                <el-radio-button value="base64">Base64</el-radio-button>
-                <el-radio-button value="plain">URI</el-radio-button>
-              </el-radio-group>
+              <el-tag size="small" type="success">Clash / mihomo</el-tag>
               <el-button size="small" type="primary" :disabled="tokenActionDisabled(row)" @click="copySubscriptionUrl(row)">复制</el-button>
             </div>
           </div>
@@ -279,13 +275,13 @@ async function handleReset(row) {
   }
 }
 
-function subscriptionUrl(token, format) {
+function subscriptionUrl(token) {
   if (!token) return ''
-  return `${window.location.origin}/sub/${token}/${format}`
+  return `${window.location.origin}/sub/${token}`
 }
 
 function copySubscriptionUrl(row) {
-  const url = subscriptionUrl(row.token, row.subscription_format || 'clash')
+  const url = subscriptionUrl(row.token)
   if (!url) return
   navigator.clipboard.writeText(url).then(() => {
     ElMessage.success('订阅链接已复制')
@@ -298,10 +294,7 @@ async function fetchTokens() {
   loading.value = true
   try {
     const res = await adminApi.subscriptionTokens.list({ page: page.value, size: size.value })
-    tokens.value = (res.data.tokens || []).map((token) => ({
-      ...token,
-      subscription_format: token.subscription_format || 'clash',
-    }))
+    tokens.value = res.data.tokens || []
     total.value = res.data.total || 0
   } catch (err) {
     ElMessage.error('获取 Token 列表失败')

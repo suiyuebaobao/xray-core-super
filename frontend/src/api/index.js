@@ -62,9 +62,11 @@ export const adminApi = {
   },
   nodes: {
     list: () => httpGet('/api/admin/nodes', freshParams()),
+    regions: () => httpGet('/api/admin/nodes/regions', freshParams()),
     create: (payload) => httpPost('/api/admin/nodes', payload),
     update: (id, payload) => httpPut(`/api/admin/nodes/${id}`, payload),
     delete: (id) => httpDelete(`/api/admin/nodes/${id}`),
+    resyncUsers: (id) => httpPost(`/api/admin/nodes/${id}/resync-users`),
     scanDeployIps: (payload) => httpPost('/api/admin/nodes/deploy/scan-ips', payload),
     deploy: (payload) => httpPost('/api/admin/nodes/deploy', payload),
     repairCenter: (payload) => httpPost('/api/admin/nodes/repair-center', payload),

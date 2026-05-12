@@ -37,6 +37,7 @@ func setupNodeAccessTest(t *testing.T) (*gorm.DB, *service.NodeAccessService) {
 		&model.Plan{},
 		&model.Node{},
 		&model.NodeGroup{},
+		&model.NodeGroupNode{},
 		&model.NodeAccessTask{},
 		&model.RefreshToken{},
 	))
@@ -219,6 +220,105 @@ func TestNodeAccessService_TriggerOnSubscribe_Socks5PayloadOmitsFlow(t *testing.
 	require.NoError(t, json.Unmarshal([]byte(*task.Payload), &payload))
 	assert.Equal(t, "tcp", payload["transport"])
 	assert.NotContains(t, payload, "flow")
+}
+
+func TestNodeAccessService_ResyncVisibleSubscriptionsForNode_QueuesVisibleActiveUsers(t *testing.T) {
+	db, svc := setupNodeAccessTest(t)
+	ctx := context.Background()
+
+	nodeGroup := &model.NodeGroup{Name: "visible-group"}
+	require.NoError(t, db.Create(nodeGroup).Error)
+	node := &model.Node{
+		Name: "visible-node", Protocol: "vless", Transport: "xhttp",
+		Host: "visible.node.test", Port: 8443, ServerName: "www.microsoft.com",
+		AgentBaseURL: "http://node:8080", AgentTokenHash: "hash", IsEnabled: true,
+	}
+	require.NoError(t, db.Create(node).Error)
+	require.NoError(t, db.Create(&model.NodeGroupNode{NodeGroupID: nodeGroup.ID, NodeID: node.ID}).Error)
+	plan := &model.Plan{Name: "visible-plan", Price: 10, DurationDays: 30, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	require.NoError(t, db.Exec("INSERT INTO plan_node_groups (plan_id, node_group_id) VALUES (?, ?)", plan.ID, nodeGroup.ID).Error)
+
+	users := []model.User{
+		{UUID: "resync-user-1", Username: "resync1", PasswordHash: "hashed", XrayUserKey: "resync1@test.local", Status: "active"},
+		{UUID: "resync-user-2", Username: "resync2", PasswordHash: "hashed", XrayUserKey: "resync2@test.local", Status: "active"},
+	}
+	for i := range users {
+		require.NoError(t, db.Create(&users[i]).Error)
+	}
+	for _, user := range users {
+		require.NoError(t, db.Create(&model.UserSubscription{
+			UserID: user.ID, PlanID: plan.ID, StartDate: db.NowFunc(),
+			ExpireDate: db.NowFunc().AddDate(0, 0, 30), Status: "ACTIVE",
+			SpeedLimitBps: 2_000_000,
+		}).Error)
+	}
+	require.NoError(t, db.Create(&model.UserSubscription{
+		UserID: 1, PlanID: plan.ID, StartDate: db.NowFunc(),
+		ExpireDate: db.NowFunc().AddDate(0, 0, -1), Status: "ACTIVE",
+	}).Error)
+
+	result, err := svc.ResyncVisibleSubscriptionsForNode(ctx, node.ID)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, node.ID, result.NodeID)
+	assert.Equal(t, []uint64{nodeGroup.ID}, result.GroupIDs)
+	assert.Equal(t, 2, result.TargetedCount)
+	assert.Equal(t, 2, result.QueuedCount)
+	assert.Equal(t, 0, result.SkippedCount)
+
+	var tasks []model.NodeAccessTask
+	require.NoError(t, db.Where("node_id = ? AND action = ?", node.ID, "UPSERT_USER").Order("id ASC").Find(&tasks).Error)
+	require.Len(t, tasks, 2)
+	for _, task := range tasks {
+		require.NotNil(t, task.Payload)
+		var payload map[string]interface{}
+		require.NoError(t, json.Unmarshal([]byte(*task.Payload), &payload))
+		assert.Equal(t, "xhttp", payload["transport"])
+		assert.NotContains(t, payload, "flow")
+		assert.Equal(t, float64(2_000_000), payload["speed_limit_bps"])
+	}
+}
+
+func TestNodeAccessService_ResyncVisibleSubscriptionsForNode_SkipsOpenTasks(t *testing.T) {
+	db, svc := setupNodeAccessTest(t)
+	ctx := context.Background()
+
+	nodeGroup := &model.NodeGroup{Name: "open-task-group"}
+	require.NoError(t, db.Create(nodeGroup).Error)
+	node := &model.Node{
+		Name: "open-task-node", Protocol: "vless", Transport: "tcp",
+		Host: "open.node.test", Port: 443, ServerName: "www.microsoft.com",
+		AgentBaseURL: "http://node:8080", AgentTokenHash: "hash", IsEnabled: true,
+	}
+	require.NoError(t, db.Create(node).Error)
+	require.NoError(t, db.Create(&model.NodeGroupNode{NodeGroupID: nodeGroup.ID, NodeID: node.ID}).Error)
+	plan := &model.Plan{Name: "open-task-plan", Price: 10, DurationDays: 30, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	require.NoError(t, db.Exec("INSERT INTO plan_node_groups (plan_id, node_group_id) VALUES (?, ?)", plan.ID, nodeGroup.ID).Error)
+	sub := &model.UserSubscription{
+		UserID: 1, PlanID: plan.ID, StartDate: db.NowFunc(),
+		ExpireDate: db.NowFunc().AddDate(0, 0, 30), Status: "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+	payload := `{"action":"UPSERT_USER"}`
+	require.NoError(t, db.Create(&model.NodeAccessTask{
+		NodeID: node.ID, SubscriptionID: &sub.ID, Action: "UPSERT_USER", Payload: &payload,
+		Status: "PENDING", ScheduledAt: db.NowFunc(), IdempotencyKey: "open-task",
+	}).Error)
+
+	result, err := svc.ResyncVisibleSubscriptionsForNode(ctx, node.ID)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, 1, result.TargetedCount)
+	assert.Equal(t, 0, result.QueuedCount)
+	assert.Equal(t, 1, result.SkippedCount)
+
+	var count int64
+	require.NoError(t, db.Model(&model.NodeAccessTask{}).
+		Where("node_id = ? AND subscription_id = ? AND action = ?", node.ID, sub.ID, "UPSERT_USER").
+		Count(&count).Error)
+	assert.Equal(t, int64(1), count)
 }
 
 // TestNodeAccessService_TriggerOnExpire 测试触发订阅过期任务。

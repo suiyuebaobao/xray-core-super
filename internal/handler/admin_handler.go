@@ -516,8 +516,14 @@ func NewAdminNodeHandlerWithSync(nodeRepo *repository.NodeRepository, subRepo *r
 	return &AdminNodeHandler{nodeRepo: nodeRepo, nodeHostRepo: hostRepo, subRepo: subRepo, nodeAccessSvc: nodeAccessSvc}
 }
 
+// Regions 处理 GET /api/admin/nodes/regions — 返回内置节点国家/地区库。
+func (h *AdminNodeHandler) Regions(c *gin.Context) {
+	response.Success(c, model.RegionOptions)
+}
+
 type nodeAccessNodeSyncer interface {
 	TriggerForNodeGroups(ctx context.Context, nodeID uint64, groupIDs []uint64, action string) error
+	ResyncVisibleSubscriptionsForNode(ctx context.Context, nodeID uint64) (*service.NodeUserResyncResult, error)
 }
 
 func normalizeNodeTransportFields(transport, outboundType, xhttpPath, xhttpHost, xhttpMode, flow *string) {
@@ -781,6 +787,17 @@ func normalizeOptionalNodeIPv4(value string) string {
 	return ""
 }
 
+func normalizeNodeRegionFields(code, name, flag string) model.RegionOption {
+	return model.NormalizeRegion(code, name, flag)
+}
+
+func applyNodeRegion(node *model.Node, code, name, flag string) {
+	region := normalizeNodeRegionFields(code, name, flag)
+	node.RegionCode = region.Code
+	node.RegionName = region.Name
+	node.RegionFlag = region.Flag
+}
+
 // Create 处理 POST /api/admin/nodes — 创建节点。
 func (h *AdminNodeHandler) Create(c *gin.Context) {
 	var req model.CreateNodeRequest
@@ -813,6 +830,7 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 		response.HandleError(c, response.ErrBadRequest)
 		return
 	}
+	region := normalizeNodeRegionFields(req.RegionCode, req.RegionName, req.RegionFlag)
 
 	// 计算 Agent Token 哈希（SHA-256，不存明文）
 	agentTokenHash := ""
@@ -900,6 +918,9 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 				}
 				node := &model.Node{
 					Name:           nodeNameForProxyVariant(req.Name, req.Host, proxyIndex, len(proxyURLs), optionCopy, len(options)),
+					RegionCode:     region.Code,
+					RegionName:     region.Name,
+					RegionFlag:     region.Flag,
 					Protocol:       req.Protocol,
 					TrafficPool:    model.NormalizeTrafficPool(req.TrafficPool),
 					OutboundType:   outboundType,
@@ -956,6 +977,9 @@ func (h *AdminNodeHandler) Create(c *gin.Context) {
 	}
 	node := &model.Node{
 		Name:             req.Name,
+		RegionCode:       region.Code,
+		RegionName:       region.Name,
+		RegionFlag:       region.Flag,
 		Protocol:         req.Protocol,
 		TrafficPool:      model.NormalizeTrafficPool(req.TrafficPool),
 		OutboundType:     normalizeNodeOutboundType(req.OutboundType),
@@ -1021,6 +1045,7 @@ func (h *AdminNodeHandler) Update(c *gin.Context) {
 	}
 
 	node.Name = req.Name
+	applyNodeRegion(node, req.RegionCode, req.RegionName, req.RegionFlag)
 	if req.Protocol != "" {
 		node.Protocol = req.Protocol
 	}
@@ -1098,6 +1123,38 @@ func (h *AdminNodeHandler) Update(c *gin.Context) {
 	h.syncNodeChange(c.Request.Context(), node.ID, oldGroupIDs, newGroupIDs, oldEnabled, node.IsEnabled)
 
 	response.Success(c, node)
+}
+
+// ResyncUsers 处理 POST /api/admin/nodes/:id/resync-users — 重同步节点可见订阅用户。
+func (h *AdminNodeHandler) ResyncUsers(c *gin.Context) {
+	if h.nodeAccessSvc == nil {
+		response.HandleError(c, response.ErrInternalServer)
+		return
+	}
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.HandleError(c, response.ErrBadRequest)
+		return
+	}
+
+	result, err := h.nodeAccessSvc.ResyncVisibleSubscriptionsForNode(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.HandleError(c, response.ErrNotFound)
+			return
+		}
+		log.Printf("[admin] resync node %d users failed: %v", id, err)
+		response.HandleError(c, response.ErrInternalServer)
+		return
+	}
+
+	response.Success(c, gin.H{
+		"node_id":        result.NodeID,
+		"group_ids":      result.GroupIDs,
+		"targeted_count": result.TargetedCount,
+		"queued_count":   result.QueuedCount,
+		"skipped_count":  result.SkippedCount,
+	})
 }
 
 func normalizeNodeOutboundType(value string) string {

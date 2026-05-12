@@ -13,7 +13,7 @@ import (
 func TestSubHandler_ETag(t *testing.T) {
 	r, _ := setupSubHandlerTest(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123/clash", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -27,13 +27,13 @@ func TestSubHandler_IfNoneMatch(t *testing.T) {
 	r, _ := setupSubHandlerTest(t)
 
 	// 先获取 ETag
-	firstReq := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123/clash", nil)
+	firstReq := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123", nil)
 	firstW := httptest.NewRecorder()
 	r.ServeHTTP(firstW, firstReq)
 	etag := firstW.Header().Get("ETag")
 
 	// 使用 If-None-Match 请求
-	secondReq := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123/clash", nil)
+	secondReq := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123", nil)
 	secondReq.Header.Set("If-None-Match", etag)
 	secondW := httptest.NewRecorder()
 	r.ServeHTTP(secondW, secondReq)

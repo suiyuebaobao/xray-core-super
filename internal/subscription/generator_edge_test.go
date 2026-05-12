@@ -7,7 +7,6 @@
 package subscription_test
 
 import (
-	"strings"
 	"testing"
 
 	"suiyue/internal/subscription"
@@ -24,11 +23,6 @@ func TestGenerator_EmptyNodes(t *testing.T) {
 	yamlContent := gen.GenerateClashYAML(nodes)
 	assert.Contains(t, yamlContent, "proxies: []")
 
-	uriContent := gen.GeneratePlainURI(nodes)
-	assert.Equal(t, "", uriContent)
-
-	base64Content := gen.GenerateBase64(nodes)
-	assert.NotEmpty(t, base64Content)
 }
 
 // TestGenerator_SpecialCharacters 测试特殊字符处理。
@@ -52,9 +46,6 @@ func TestGenerator_SpecialCharacters(t *testing.T) {
 	yamlContent := gen.GenerateClashYAML(nodes)
 	assert.Contains(t, yamlContent, "HK-节点-01 [测试]")
 
-	uriContent := gen.GeneratePlainURI(nodes)
-	assert.True(t, strings.HasPrefix(uriContent, "vless://"))
-	assert.Contains(t, uriContent, "#HK-%E8%8A%82%E7%82%B9-01%20%5B%E6%B5%8B%E8%AF%95%5D")
 }
 
 // TestGenerator_MultipleNodes 测试大量节点生成。
@@ -79,7 +70,4 @@ func TestGenerator_MultipleNodes(t *testing.T) {
 	yamlContent := gen.GenerateClashYAML(nodes)
 	assert.Contains(t, yamlContent, "Node-")
 
-	uriContent := gen.GeneratePlainURI(nodes)
-	lines := strings.Split(strings.TrimSpace(uriContent), "\n")
-	assert.Len(t, lines, 50)
 }

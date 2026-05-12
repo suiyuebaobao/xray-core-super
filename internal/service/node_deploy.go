@@ -84,6 +84,9 @@ type DeployRequest struct {
 	CenterURLs          []string `json:"center_urls"`
 	NodeToken           string   `json:"node_token"`
 	NodeName            string   `json:"node_name"`
+	RegionCode          string   `json:"region_code"`
+	RegionName          string   `json:"region_name"`
+	RegionFlag          string   `json:"region_flag"`
 	TrafficPool         string   `json:"traffic_pool"`
 	OutboundType        string   `json:"outbound_type"`
 	UDPEnabled          *bool    `json:"udp_enabled"`
@@ -656,8 +659,12 @@ func (s *NodeDeployService) Deploy(ctx context.Context, req *DeployRequest) (*De
 		nodeName = "raypilot-node-" + req.SSHHost
 	}
 	hash := sha256.Sum256([]byte(nodeToken))
+	region := model.NormalizeRegion(req.RegionCode, req.RegionName, req.RegionFlag)
 	node := &model.Node{
 		Name:           nodeName,
+		RegionCode:     region.Code,
+		RegionName:     region.Name,
+		RegionFlag:     region.Flag,
 		Protocol:       "vless",
 		TrafficPool:    model.NormalizeTrafficPool(req.TrafficPool),
 		OutboundType:   normalizeDeployOutboundType(req.OutboundType),
@@ -962,6 +969,7 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 	addStep("创建主机记录", "success", fmt.Sprintf("物理主机已创建 (ID: %d)", nodeHost.ID))
 
 	nodeConfigs := make([]MultiExitNodeConfig, 0, len(selectedIPs)*len(options))
+	region := model.NormalizeRegion(req.RegionCode, req.RegionName, req.RegionFlag)
 	for i, ip := range selectedIPs {
 		listenIP := deployListenIP(req.MultiIPEnabled, ip)
 		seenEndpoints := map[string]struct{}{}
@@ -977,6 +985,9 @@ func (s *NodeDeployService) deployMultiLine(ctx context.Context, req *DeployRequ
 				nodeName := deployProxyNodeName(req.NodeName, ip, proxyIndex, len(proxyURLs), optionCopy, len(options))
 				node := &model.Node{
 					Name:           nodeName,
+					RegionCode:     region.Code,
+					RegionName:     region.Name,
+					RegionFlag:     region.Flag,
 					Protocol:       "vless",
 					TrafficPool:    model.NormalizeTrafficPool(req.TrafficPool),
 					OutboundType:   normalizeDeployOutboundType(req.OutboundType),

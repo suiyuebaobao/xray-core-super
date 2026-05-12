@@ -4,20 +4,18 @@
 // - 根据订阅 token 查询有效订阅
 // - 查询套餐关联的节点组
 // - 查询节点组下的启用节点
-// - 生成三种格式的订阅内容（Clash YAML、Base64 聚合、纯文本 URI）
+// - 生成 Clash/mihomo YAML 订阅内容
 // - 更新 token 最后使用时间
 //
 // 订阅格式设计：
 // - 抽象 NodeConfig 作为统一数据源
-// - Clash YAML 作为一等公民，从 NodeConfig 直接生成
-// - Base64 和纯文本 URI 从 Clash YAML 转换而来
+// - Clash/mihomo YAML 作为唯一下发格式，从 NodeConfig 直接生成
 package subscription
 
 import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 	"unicode"
@@ -79,8 +77,8 @@ type GenerateResult struct {
 	Subscription *model.UserSubscription // 订阅信息
 }
 
-// GenerateByToken 根据订阅 token 生成指定格式的订阅内容。
-func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, format string) (*GenerateResult, error) {
+// GenerateByToken 根据订阅 token 生成 Clash/mihomo YAML 订阅内容。
+func (g *Generator) GenerateByToken(ctx context.Context, tokenString string) (*GenerateResult, error) {
 	// 1. 查询订阅 token
 	token, err := g.tokenRepo.FindByToken(ctx, tokenString)
 	if err != nil {
@@ -194,29 +192,10 @@ func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, for
 	// 8. 读取订阅输出配置。后台配置优先，环境变量作为默认回退。
 	outputConfig := g.loadOutputConfig(ctx)
 
-	// 9. 按格式生成
-	var content string
-	var contentType string
-	var filename string
-
-	switch format {
-	case "clash":
-		content = g.generateClashYAMLWithRules(nodeConfigs, outputConfig.CustomRules)
-		contentType = "text/yaml; charset=utf-8"
-		filename = filenameForProfileAndFormat(outputConfig.ProfileName, format)
-	case "base64":
-		// Base64 格式：将 URI 列表做 Base64 编码，适用于通用客户端
-		plainContent := g.generatePlainURI(nodeConfigs)
-		content = base64.StdEncoding.EncodeToString([]byte(plainContent))
-		contentType = "text/plain; charset=utf-8"
-		filename = filenameForProfileAndFormat(outputConfig.ProfileName, format)
-	case "plain":
-		content = g.generatePlainURI(nodeConfigs)
-		contentType = "text/plain; charset=utf-8"
-		filename = filenameForProfileAndFormat(outputConfig.ProfileName, format)
-	default:
-		return nil, response.ErrBadRequest
-	}
+	// 9. 只下发 Clash/mihomo YAML。旧的 base64/plain 入口已下线。
+	content := g.generateClashYAMLWithConfig(nodeConfigs, outputConfig)
+	contentType := "text/yaml; charset=utf-8"
+	filename := filenameForProfileName(outputConfig.ProfileName)
 
 	// 10. 更新 token 最后使用时间
 	_ = g.tokenRepo.UpdateLastUsed(ctx, token.ID)
@@ -235,17 +214,9 @@ func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, for
 	}, nil
 }
 
-func (g *Generator) filenameForFormat(format string) string {
-	return filenameForProfileAndFormat(g.profileName, format)
-}
-
-func filenameForProfileAndFormat(profileName string, format string) string {
+func filenameForProfileName(profileName string) string {
 	baseName := sanitizeProfileName(profileName)
-	extension := ".txt"
-	if format == "clash" {
-		extension = ".yaml"
-	}
-	return trimProfileExtension(baseName) + extension
+	return trimProfileExtension(baseName)
 }
 
 func (g *Generator) loadOutputConfig(ctx context.Context) model.SubscriptionConfig {
@@ -333,7 +304,11 @@ func trimProfileExtension(name string) string {
 
 // NodeConfig 节点配置抽象，作为统一数据源。
 type NodeConfig struct {
+	NodeID       uint64
 	Name         string
+	RegionCode   string
+	RegionName   string
+	RegionFlag   string
 	Server       string
 	Port         uint32
 	UUID         string
@@ -352,7 +327,11 @@ type NodeConfig struct {
 
 func buildNodeConfigFromExitNode(node model.Node, uuid string, name string, server string, port uint32) NodeConfig {
 	return NodeConfig{
+		NodeID:       node.ID,
 		Name:         name,
+		RegionCode:   node.RegionCode,
+		RegionName:   node.RegionName,
+		RegionFlag:   node.RegionFlag,
 		Server:       server,
 		Port:         port,
 		UUID:         uuid,
@@ -445,34 +424,41 @@ func (g *Generator) GenerateClashYAML(nodes []NodeConfig) string {
 	return g.generateClashYAMLWithRules(nodes, model.DefaultSubscriptionConfig().CustomRules)
 }
 
-// GenerateBase64 公开方法：生成 Base64 编码的聚合订阅。
-func (g *Generator) GenerateBase64(nodes []NodeConfig) string {
-	clashContent := g.GenerateClashYAML(nodes)
-	return base64.StdEncoding.EncodeToString([]byte(clashContent))
-}
-
-// GeneratePlainURI 公开方法：生成纯文本 URI 分享链接。
-func (g *Generator) GeneratePlainURI(nodes []NodeConfig) string {
-	return g.generatePlainURI(nodes)
-}
-
 // generateClashYAML 生成 Clash/mihomo 格式的 YAML 配置。
 func (g *Generator) generateClashYAML(nodes []NodeConfig) string {
 	return g.generateClashYAMLWithRules(nodes, model.DefaultSubscriptionConfig().CustomRules)
 }
 
 func (g *Generator) generateClashYAMLWithRules(nodes []NodeConfig, rules []string) string {
-	rules = model.NormalizeSubscriptionConfig(model.SubscriptionConfig{
-		ProfileName:     g.profileName,
-		CustomRules:     rules,
-		IncludeUserInfo: true,
-	}).CustomRules
+	cfg := model.NormalizeSubscriptionConfig(model.SubscriptionConfig{
+		ProfileName:        g.profileName,
+		CustomRules:        rules,
+		IncludeUserInfo:    true,
+		IncludeRegionIcon:  model.DefaultSubscriptionConfig().IncludeRegionIcon,
+		NodeNameTemplate:   model.DefaultSubscriptionConfig().NodeNameTemplate,
+		HealthCheckURL:     model.DefaultSubscriptionConfig().HealthCheckURL,
+		URLTestInterval:    model.DefaultSubscriptionConfig().URLTestInterval,
+		EnableURLTestGroup: false,
+	})
+	return g.generateClashYAMLWithConfig(nodes, cfg)
+}
 
+func (g *Generator) generateClashYAMLWithConfig(nodes []NodeConfig, cfg model.SubscriptionConfig) string {
+	cfg = model.NormalizeSubscriptionConfig(cfg)
 	proxies := make([]map[string]interface{}, 0, len(nodes))
-	for _, nc := range nodes {
+	displayItems := make([]subscriptionDisplayNode, 0, len(nodes))
+	seenDisplayNames := make(map[string]int, len(nodes))
+	for index, nc := range nodes {
+		displayName := formatSubscriptionNodeName(nc, cfg, index+1)
+		if count := seenDisplayNames[displayName]; count > 0 {
+			displayName = fmt.Sprintf("%s %02d", displayName, count+1)
+		}
+		seenDisplayNames[displayName]++
+		displayItems = append(displayItems, subscriptionDisplayNode{NodeID: nc.NodeID, Name: displayName})
+
 		transport := normalizeSubscriptionTransport(nc.Transport)
 		proxy := map[string]interface{}{
-			"name":               nc.Name,
+			"name":               displayName,
 			"type":               "vless",
 			"server":             nc.Server,
 			"port":               nc.Port,
@@ -503,11 +489,16 @@ func (g *Generator) generateClashYAMLWithRules(nodes []NodeConfig, rules []strin
 		proxies = append(proxies, proxy)
 	}
 
-	proxyNames := make([]string, 0, len(nodes))
-	for _, nc := range nodes {
-		proxyNames = append(proxyNames, nc.Name)
+	proxyGroups := g.generateProxyGroups(displayItems, cfg)
+	if cfg.EnableURLTestGroup && !generatedProxyGroupNameExists(proxyGroups, subscriptionAutoGroupName()) {
+		proxyGroups = append(proxyGroups, map[string]interface{}{
+			"name":     subscriptionAutoGroupName(),
+			"type":     "url-test",
+			"proxies":  displayNodeNames(displayItems),
+			"url":      cfg.HealthCheckURL,
+			"interval": cfg.URLTestInterval,
+		})
 	}
-	proxyNames = append(proxyNames, "DIRECT")
 
 	config := map[string]interface{}{
 		"mixed-port": 7890,
@@ -522,15 +513,9 @@ func (g *Generator) generateClashYAMLWithRules(nodes []NodeConfig, rules []strin
 				"119.29.29.29",
 			},
 		},
-		"proxies": proxies,
-		"proxy-groups": []map[string]interface{}{
-			{
-				"name":    "PROXY",
-				"type":    "select",
-				"proxies": proxyNames,
-			},
-		},
-		"rules": rules,
+		"proxies":      proxies,
+		"proxy-groups": proxyGroups,
+		"rules":        cfg.CustomRules,
 	}
 
 	data, err := yaml.Marshal(config)
@@ -541,37 +526,161 @@ func (g *Generator) generateClashYAMLWithRules(nodes []NodeConfig, rules []strin
 	return string(data)
 }
 
-// generatePlainURI 生成纯文本 URI 分享链接（VLESS 格式）。
-func (g *Generator) generatePlainURI(nodes []NodeConfig) string {
-	var lines []string
-	for _, nc := range nodes {
-		transport := normalizeSubscriptionTransport(nc.Transport)
-		query := url.Values{}
-		query.Set("encryption", "none")
-		query.Set("security", "reality")
-		query.Set("sni", nc.ServerName)
-		query.Set("pbk", nc.PublicKey)
-		query.Set("sid", nc.ShortID)
-		query.Set("fp", nc.Fingerprint)
-		query.Set("type", transport)
-		if flow := subscriptionFlowForNode(nc); flow != "" {
-			query.Set("flow", flow)
+func formatSubscriptionNodeName(nc NodeConfig, cfg model.SubscriptionConfig, index int) string {
+	rawName := strings.TrimSpace(nc.Name)
+	if rawName == "" {
+		rawName = fmt.Sprintf("Node %02d", index)
+	}
+	flag := ""
+	if cfg.IncludeRegionIcon {
+		flag = strings.TrimSpace(nc.RegionFlag)
+	}
+	template := strings.TrimSpace(cfg.NodeNameTemplate)
+	if template == "" {
+		template = "{{flag}} {{name}}"
+	}
+	values := map[string]string{
+		"{{flag}}":      flag,
+		"{{name}}":      rawName,
+		"{{region}}":    strings.TrimSpace(nc.RegionName),
+		"{{code}}":      strings.TrimSpace(nc.RegionCode),
+		"{{index}}":     fmt.Sprintf("%02d", index),
+		"{{transport}}": strings.ToUpper(normalizeSubscriptionTransport(nc.Transport)),
+		"{{pool}}":      trafficPoolNameForOutbound(nc.OutboundType),
+	}
+	name := template
+	for placeholder, value := range values {
+		name = strings.ReplaceAll(name, placeholder, value)
+	}
+	name = strings.Join(strings.Fields(name), " ")
+	if name == "" {
+		name = rawName
+	}
+	return name
+}
+
+func trafficPoolNameForOutbound(outboundType string) string {
+	if strings.EqualFold(strings.TrimSpace(outboundType), model.NodeOutboundSocks5) {
+		return "家宽"
+	}
+	return "普通"
+}
+
+type subscriptionDisplayNode struct {
+	NodeID uint64
+	Name   string
+}
+
+func displayNodeNames(nodes []subscriptionDisplayNode) []string {
+	names := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		names = append(names, node.Name)
+	}
+	return names
+}
+
+func (g *Generator) generateProxyGroups(nodes []subscriptionDisplayNode, cfg model.SubscriptionConfig) []map[string]interface{} {
+	groups := make([]map[string]interface{}, 0, len(cfg.ProxyGroups)+1)
+	allNames := displayNodeNames(nodes)
+	autoGroupName := subscriptionAutoGroupName()
+	canReferenceAutoGroup := cfg.EnableURLTestGroup && (!subscriptionConfigHasGroupNamed(cfg.ProxyGroups, autoGroupName) || subscriptionConfigHasURLTestGroupNamed(cfg.ProxyGroups, autoGroupName))
+	for index, group := range cfg.ProxyGroups {
+		names := namesForSubscriptionGroup(nodes, group)
+		if len(names) == 0 {
+			continue
 		}
-		if transport == "xhttp" {
-			query.Set("path", normalizeSubscriptionXHTTPPath(nc.XHTTPPath))
-			query.Set("mode", normalizeSubscriptionXHTTPMode(nc.XHTTPMode))
-			if host := strings.TrimSpace(nc.XHTTPHost); host != "" {
-				query.Set("host", host)
+		proxies := make([]string, 0, len(names)+2)
+		if group.Type == "select" && canReferenceAutoGroup && !subscriptionGroupNameEquals(group.Name, autoGroupName) {
+			if index == 0 || group.IncludeAuto {
+				proxies = append(proxies, autoGroupName)
 			}
 		}
-		uri := fmt.Sprintf("vless://%s@%s:%d?%s#%s",
-			nc.UUID,
-			nc.Server,
-			nc.Port,
-			query.Encode(),
-			url.PathEscape(nc.Name),
-		)
-		lines = append(lines, uri)
+		proxies = append(proxies, names...)
+		if group.IncludeDirect {
+			proxies = append(proxies, "DIRECT")
+		}
+		outputGroup := map[string]interface{}{
+			"name":    group.Name,
+			"type":    group.Type,
+			"proxies": proxies,
+		}
+		if group.Type == "url-test" {
+			outputGroup["url"] = cfg.HealthCheckURL
+			outputGroup["interval"] = cfg.URLTestInterval
+		}
+		groups = append(groups, outputGroup)
 	}
-	return strings.Join(lines, "\n")
+	if len(groups) == 0 {
+		proxies := make([]string, 0, len(allNames)+2)
+		if canReferenceAutoGroup {
+			proxies = append(proxies, autoGroupName)
+		}
+		proxies = append(proxies, allNames...)
+		proxies = append(proxies, "DIRECT")
+		groups = append(groups, map[string]interface{}{
+			"name":    "PROXY",
+			"type":    "select",
+			"proxies": proxies,
+		})
+	}
+	return groups
+}
+
+func namesForSubscriptionGroup(nodes []subscriptionDisplayNode, group model.SubscriptionProxyGroupConfig) []string {
+	if group.IncludeAll {
+		return displayNodeNames(nodes)
+	}
+	if len(group.NodeIDs) == 0 {
+		return nil
+	}
+	wanted := make(map[uint64]struct{}, len(group.NodeIDs))
+	for _, id := range group.NodeIDs {
+		if id != 0 {
+			wanted[id] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if _, ok := wanted[node.NodeID]; ok {
+			names = append(names, node.Name)
+		}
+	}
+	return names
+}
+
+func subscriptionAutoGroupName() string {
+	return "自动选择"
+}
+
+func subscriptionConfigHasGroupNamed(groups []model.SubscriptionProxyGroupConfig, name string) bool {
+	normalizedName := strings.TrimSpace(name)
+	for _, group := range groups {
+		if subscriptionGroupNameEquals(group.Name, normalizedName) {
+			return true
+		}
+	}
+	return false
+}
+
+func subscriptionConfigHasURLTestGroupNamed(groups []model.SubscriptionProxyGroupConfig, name string) bool {
+	for _, group := range groups {
+		if subscriptionGroupNameEquals(group.Name, name) && group.Type == "url-test" {
+			return true
+		}
+	}
+	return false
+}
+
+func subscriptionGroupNameEquals(left, right string) bool {
+	return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))
+}
+
+func generatedProxyGroupNameExists(groups []map[string]interface{}, name string) bool {
+	normalizedName := strings.TrimSpace(name)
+	for _, group := range groups {
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(group["name"])), normalizedName) {
+			return true
+		}
+	}
+	return false
 }

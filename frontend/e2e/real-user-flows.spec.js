@@ -127,7 +127,7 @@ async function registerAndLogin(page, user) {
   await page.getByPlaceholder('用户名').fill(user.username)
   await page.getByPlaceholder('密码', { exact: true }).fill(user.password)
   await page.getByRole('button', { name: '登录' }).click()
-  await expect(page).toHaveURL(/\/$/)
+  await expect(page).toHaveURL(/\/dashboard$/)
   await expect(page.getByText(user.username).first()).toBeVisible()
 }
 
@@ -152,21 +152,15 @@ async function cleanupUser(request, adminToken, username, knownId) {
 async function expectSubscriptionDownload(request, url, format, nodeName, expectedTransport = 'tcp') {
   const response = await request.get(url)
   expect(response.ok(), `${format} subscription download`).toBeTruthy()
-  const expectedFilename = `${subscriptionProfileName}.${format === 'clash' ? 'yaml' : 'txt'}`
-  expect(response.headers()['content-disposition'] || '', `${format} content disposition`).toContain(expectedFilename)
+  expect(response.headers()['content-disposition'] || '', `${format} content disposition`).toContain(subscriptionProfileName)
   const text = await response.text()
-  const content = format === 'base64' ? Buffer.from(text, 'base64').toString('utf8') : text
+  const content = text
   expect(content, `${format} subscription contains the test node`).toContain(nodeName)
-  expect(content, `${format} subscription contains vless data`).toContain(format === 'clash' ? 'vless' : 'vless://')
+  expect(content, `${format} subscription contains vless data`).toContain('vless')
   if (expectedTransport === 'xhttp') {
-    if (format === 'plain' || format === 'base64') {
-      expect(content, `${format} subscription uses xhttp URI type`).toContain('type=xhttp')
-      expect(content, `${format} subscription omits vision flow for xhttp`).not.toContain('flow=')
-    } else {
-      expect(content, `${format} subscription uses xhttp network`).toContain('network: xhttp')
-      expect(content, `${format} subscription includes xhttp opts`).toContain('xhttp-opts:')
-      expect(content, `${format} subscription omits vision flow for xhttp`).not.toContain('flow:')
-    }
+    expect(content, `${format} subscription uses xhttp network`).toContain('network: xhttp')
+    expect(content, `${format} subscription includes xhttp opts`).toContain('xhttp-opts:')
+    expect(content, `${format} subscription omits vision flow for xhttp`).not.toContain('flow:')
   }
 }
 
@@ -372,22 +366,14 @@ test('real user flows cover signup, plans, orders, redeem, subscriptions, profil
     await expect(pageA.getByRole('heading', { name: '我的订阅' })).toBeVisible()
     await expect(pageA.getByText('订阅信息')).toBeVisible()
     await expect(pageA.getByText('ACTIVE').first()).toBeVisible()
-    await expect(pageA.locator('.subscription-page .link-url')).toContainText('/clash')
-    const clashUrl = await getSelectedSubscriptionUrl(pageA)
-
-    await pageA.locator('.subscription-page .format-selector').getByText('Base64').click()
-    await expect(pageA.locator('.subscription-page .link-url')).toContainText('/base64')
-    const base64Url = await getSelectedSubscriptionUrl(pageA)
-
-    await pageA.locator('.subscription-page .format-selector').getByText('URI').click()
-    await expect(pageA.locator('.subscription-page .link-url')).toContainText('/plain')
-    const plainUrl = await getSelectedSubscriptionUrl(pageA)
+    await expect(pageA.locator('.subscription-page .link-url')).not.toContainText('/clash')
+    const subscriptionUrl = await getSelectedSubscriptionUrl(pageA)
+    await expect(pageA.locator('.subscription-page')).not.toContainText('Base64')
+    await expect(pageA.locator('.subscription-page')).not.toContainText('URI')
 
     const aLinkText = await pageA.locator('.subscription-page .link-url').textContent()
     expect(aLinkText.includes(subscriptionB.tokens[0]), 'user A page must not expose user B subscription token').toBe(false)
-    await expectSubscriptionDownload(contextA.request, clashUrl, 'clash', node.name, 'xhttp')
-    await expectSubscriptionDownload(contextA.request, base64Url, 'base64', node.name, 'xhttp')
-    await expectSubscriptionDownload(contextA.request, plainUrl, 'plain', node.name, 'xhttp')
+    await expectSubscriptionDownload(contextA.request, subscriptionUrl, 'default', node.name, 'xhttp')
 
     await pageA.goto('/profile')
     await pageA.waitForLoadState('networkidle')

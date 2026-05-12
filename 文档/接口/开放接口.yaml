@@ -365,22 +365,16 @@ paths:
       responses:
         "200":
           description: 上报成功
-  /sub/{token}/{format}:
+  /sub/{token}:
     get:
       summary: 下载订阅配置
-      description: 一个用户级 Token 返回直连和中转多条线路；中转线路 server/port 来自中转节点，Reality 参数来自出口节点；用户连接中转不需要中转专用用户 Token。响应头包含可配置文件名、profile-title、可选 subscription-userinfo 用量信息；Clash/mihomo rules 由后台订阅配置控制。
+      description: 一个用户级 Token 返回 Clash/mihomo YAML，包含直连和中转多条线路；中转线路 server/port 来自中转节点，Reality 参数来自出口节点；用户连接中转不需要中转专用用户 Token。响应头包含可配置文件名、profile-title、可选 subscription-userinfo 用量信息；Clash/mihomo rules 由后台订阅配置控制。
       parameters:
         - name: token
           in: path
           required: true
           schema:
             type: string
-        - name: format
-          in: path
-          required: true
-          schema:
-            type: string
-            enum: [clash, base64, plain]
       responses:
         "200":
           description: 订阅内容

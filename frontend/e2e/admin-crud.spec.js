@@ -372,17 +372,20 @@ test('admin CRUD APIs and subscription side effects work end to end', async ({ r
     expect(tokenRow?.subscription_status).toBe('ACTIVE')
     expect(tokenRow?.token_status).toBe('ACTIVE')
 
-    const subPlain = await request.get(`/sub/${resetTokenData.token}/plain`)
-    expect(subPlain.ok(), 'download plain subscription after token reset').toBeTruthy()
-    const subText = await subPlain.text()
+    const subResponse = await request.get(`/sub/${resetTokenData.token}`)
+    expect(subResponse.ok(), 'download subscription after token reset').toBeTruthy()
+    const subText = await subResponse.text()
     expect(subText).toContain(`${prefix}-node-updated`)
     expect(subText).toContain(`${prefix}-relay-backend`)
+
+    const legacyClashDownload = await request.get(`/sub/${resetTokenData.token}/clash`)
+    expect(legacyClashDownload.ok(), 'legacy clash suffix should not download subscription').toBeFalsy()
 
     await api(request, adminToken, 'post', `/api/admin/subscription-tokens/${created.tokenId}/revoke`, {
       data: {},
     })
 
-    const revokedDownload = await request.get(`/sub/${resetTokenData.token}/plain`)
+    const revokedDownload = await request.get(`/sub/${resetTokenData.token}`)
     expect(revokedDownload.ok(), 'revoked token should not download subscription').toBeFalsy()
 
     await api(request, adminToken, 'delete', `/api/admin/users/${created.userId}`)

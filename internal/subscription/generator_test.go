@@ -2,17 +2,13 @@
 //
 // 测试范围：
 // - Clash YAML 格式生成
-// - Base64 格式生成
-// - 纯文本 URI 格式生成
 // - 无效 Token 处理
 // - 过期订阅处理
 package subscription_test
 
 import (
 	"context"
-	"encoding/base64"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -112,81 +108,8 @@ func TestGenerator_ClashYAML(t *testing.T) {
 	assert.Contains(t, yamlContent, "pubkey2")
 }
 
-// TestGenerator_Base64 测试 Base64 格式生成。
-func TestGenerator_Base64(t *testing.T) {
-	_, gen := setupSubTestDB(t)
-
-	nodes := []subscription.NodeConfig{
-		{
-			Name:        "HK-01",
-			Server:      "hk.example.com",
-			Port:        443,
-			UUID:        "test-uuid",
-			ServerName:  "www.microsoft.com",
-			PublicKey:   "pubkey",
-			ShortID:     "sid",
-			Fingerprint: "chrome",
-			Flow:        "xtls-rprx-vision",
-		},
-	}
-
-	base64Content := gen.GenerateBase64(nodes)
-
-	// 验证可以解码
-	decoded, err := base64.StdEncoding.DecodeString(base64Content)
-	require.NoError(t, err)
-
-	// 解码后应包含 Clash YAML 内容
-	decodedStr := string(decoded)
-	assert.Contains(t, decodedStr, "HK-01")
-	assert.Contains(t, decodedStr, "vless")
-}
-
-// TestGenerator_PlainURI 测试纯文本 URI 格式生成。
-func TestGenerator_PlainURI(t *testing.T) {
-	_, gen := setupSubTestDB(t)
-
-	nodes := []subscription.NodeConfig{
-		{
-			Name:        "HK-01",
-			Server:      "hk.example.com",
-			Port:        443,
-			UUID:        "test-uuid",
-			ServerName:  "www.microsoft.com",
-			PublicKey:   "pubkey",
-			ShortID:     "sid",
-			Fingerprint: "chrome",
-			Flow:        "xtls-rprx-vision",
-		},
-		{
-			Name:        "US-01",
-			Server:      "us.example.com",
-			Port:        443,
-			UUID:        "test-uuid-2",
-			ServerName:  "www.microsoft.com",
-			PublicKey:   "pubkey2",
-			ShortID:     "sid2",
-			Fingerprint: "chrome",
-			Flow:        "xtls-rprx-vision",
-		},
-	}
-
-	uriContent := gen.GeneratePlainURI(nodes)
-
-	// 验证包含两个 URI（每行一个）
-	lines := strings.Split(strings.TrimSpace(uriContent), "\n")
-	assert.Len(t, lines, 2)
-
-	// 验证 URI 格式
-	assert.True(t, strings.HasPrefix(lines[0], "vless://"))
-	assert.Contains(t, lines[0], "hk.example.com")
-	assert.Contains(t, lines[0], "test-uuid")
-	assert.True(t, strings.HasPrefix(lines[1], "vless://"))
-	assert.Contains(t, lines[1], "us.example.com")
-}
-
-// TestGenerator_GenerateByToken_Clash 测试通过 token 生成 Clash 订阅。
-func TestGenerator_GenerateByToken_Clash(t *testing.T) {
+// TestGenerator_GenerateByToken_Default 测试通过 token 生成默认订阅。
+func TestGenerator_GenerateByToken_Default(t *testing.T) {
 	db, gen := setupSubTestDB(t)
 	ctx := context.Background()
 
@@ -220,18 +143,19 @@ func TestGenerator_GenerateByToken_Clash(t *testing.T) {
 	// 关联套餐和节点组
 	db.Exec("INSERT INTO plan_node_groups (plan_id, node_group_id) VALUES (?, ?)", plan.ID, nodeGroup.ID)
 
-	result, err := gen.GenerateByToken(ctx, "sub-token-clash", "clash")
+	result, err := gen.GenerateByToken(ctx, "sub-token-clash")
 	require.NoError(t, err)
 	assert.Equal(t, "text/yaml; charset=utf-8", result.ContentType)
-	assert.Equal(t, "RayPilot.yaml", result.Filename)
+	assert.Equal(t, "RayPilot", result.Filename)
 	assert.Contains(t, result.Content, "sub-node")
 	assert.Equal(t, user.ID, result.User.ID)
 	assert.Equal(t, sub.ID, result.Subscription.ID)
 
 	gen.SetProfileName("RayPilot UAT.yaml")
-	customResult, err := gen.GenerateByToken(ctx, "sub-token-clash", "clash")
+	customResult, err := gen.GenerateByToken(ctx, "sub-token-clash")
 	require.NoError(t, err)
-	assert.Equal(t, "RayPilot UAT.yaml", customResult.Filename)
+	assert.Equal(t, "RayPilot UAT", customResult.Filename)
+
 }
 
 func TestGenerator_GenerateByToken_UsesSubscriptionConfig(t *testing.T) {
@@ -270,9 +194,9 @@ func TestGenerator_GenerateByToken_UsesSubscriptionConfig(t *testing.T) {
 	}`)
 	require.NoError(t, err)
 
-	result, err := gen.GenerateByToken(ctx, "sub-config-token", "clash")
+	result, err := gen.GenerateByToken(ctx, "sub-config-token")
 	require.NoError(t, err)
-	assert.Equal(t, "LeiYun VPN.yaml", result.Filename)
+	assert.Equal(t, "LeiYun VPN", result.Filename)
 	assert.Contains(t, result.Content, "DOMAIN-SUFFIX,openai.com,PROXY")
 	assert.Contains(t, result.Content, "GEOIP,CN,DIRECT")
 	assert.Contains(t, result.Content, "MATCH,PROXY")
@@ -359,7 +283,7 @@ func TestGenerator_GenerateByToken_FiltersExhaustedTrafficPoolNodes(t *testing.T
 	}
 	require.NoError(t, db.Create(token).Error)
 
-	result, err := gen.GenerateByToken(ctx, token.Token, "plain")
+	result, err := gen.GenerateByToken(ctx, token.Token)
 	require.NoError(t, err)
 	assert.NotContains(t, result.Content, "normal.example.com")
 	assert.Contains(t, result.Content, "res.example.com")
@@ -382,91 +306,9 @@ func TestGenerator_GenerateByToken_NoPlanNodeGroups_ReturnsNoNodesError(t *testi
 	require.NoError(t, db.Create(sub).Error)
 	require.NoError(t, db.Create(&model.SubscriptionToken{UserID: user.ID, SubscriptionID: &sub.ID, Token: "nogroup-token"}).Error)
 
-	_, err := gen.GenerateByToken(ctx, "nogroup-token", "clash")
+	_, err := gen.GenerateByToken(ctx, "nogroup-token")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "当前套餐没有可用节点")
-}
-
-// TestGenerator_GenerateByToken_Base64 测试通过 token 生成 Base64 订阅。
-func TestGenerator_GenerateByToken_Base64(t *testing.T) {
-	db, gen := setupSubTestDB(t)
-	ctx := context.Background()
-
-	user := &model.User{UUID: "b64-user", Username: "b64user", PasswordHash: "h", XrayUserKey: "b64@x", Status: "active"}
-	db.Create(user)
-
-	plan := &model.Plan{Name: "B64Plan", Price: 10, DurationDays: 30, TrafficLimit: 10737418240, IsActive: true}
-	db.Create(plan)
-
-	nodeGroup := &model.NodeGroup{Name: "b64-group"}
-	db.Create(nodeGroup)
-
-	node := &model.Node{
-		Name: "b64-node", Protocol: "vless", Host: "b64.node",
-		Port: 443, ServerName: "b64.node", AgentBaseURL: "http://node:8080",
-		AgentTokenHash: "hash", NodeGroupID: &nodeGroup.ID, IsEnabled: true,
-	}
-	db.Create(node)
-
-	sub := &model.UserSubscription{
-		UserID: user.ID, PlanID: plan.ID, StartDate: time.Now(),
-		ExpireDate:   time.Now().AddDate(0, 0, 30),
-		TrafficLimit: 10737418240, UsedTraffic: 0, Status: "ACTIVE",
-	}
-	db.Create(sub)
-
-	token := &model.SubscriptionToken{UserID: user.ID, SubscriptionID: &sub.ID, Token: "b64-token"}
-	db.Create(token)
-
-	db.Exec("INSERT INTO plan_node_groups (plan_id, node_group_id) VALUES (?, ?)", plan.ID, nodeGroup.ID)
-
-	result, err := gen.GenerateByToken(ctx, "b64-token", "base64")
-	require.NoError(t, err)
-	assert.Equal(t, "text/plain; charset=utf-8", result.ContentType)
-	assert.Equal(t, "RayPilot.txt", result.Filename)
-	// 验证 Base64 可解码
-	decoded, decodeErr := base64.StdEncoding.DecodeString(result.Content)
-	require.NoError(t, decodeErr)
-	assert.Contains(t, string(decoded), "b64-node")
-}
-
-// TestGenerator_GenerateByToken_Plain 测试通过 token 生成纯文本 URI 订阅。
-func TestGenerator_GenerateByToken_Plain(t *testing.T) {
-	db, gen := setupSubTestDB(t)
-	ctx := context.Background()
-
-	user := &model.User{UUID: "plain-uuid", Username: "plainuser", PasswordHash: "h", XrayUserKey: "pl@x", Status: "active"}
-	db.Create(user)
-
-	plan := &model.Plan{Name: "PlainPlan", Price: 10, DurationDays: 30, TrafficLimit: 10737418240, IsActive: true}
-	db.Create(plan)
-
-	nodeGroup := &model.NodeGroup{Name: "plain-group"}
-	db.Create(nodeGroup)
-
-	node := &model.Node{
-		Name: "plain-node", Protocol: "vless", Host: "plain.node",
-		Port: 443, ServerName: "plain.node", AgentBaseURL: "http://node:8080",
-		AgentTokenHash: "hash", NodeGroupID: &nodeGroup.ID, IsEnabled: true,
-	}
-	db.Create(node)
-
-	sub := &model.UserSubscription{
-		UserID: user.ID, PlanID: plan.ID, StartDate: time.Now(),
-		ExpireDate:   time.Now().AddDate(0, 0, 30),
-		TrafficLimit: 10737418240, UsedTraffic: 0, Status: "ACTIVE",
-	}
-	db.Create(sub)
-
-	token := &model.SubscriptionToken{UserID: user.ID, SubscriptionID: &sub.ID, Token: "plain-token"}
-	db.Create(token)
-
-	db.Exec("INSERT INTO plan_node_groups (plan_id, node_group_id) VALUES (?, ?)", plan.ID, nodeGroup.ID)
-
-	result, err := gen.GenerateByToken(ctx, "plain-token", "plain")
-	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(result.Content, "vless://"))
-	assert.Contains(t, result.Content, "plain-node")
 }
 
 func TestGenerator_GenerateByToken_RelayOnlyUsesRelayEndpoint(t *testing.T) {
@@ -509,12 +351,13 @@ func TestGenerator_GenerateByToken_RelayOnlyUsesRelayEndpoint(t *testing.T) {
 	require.NoError(t, db.Create(&model.SubscriptionToken{UserID: user.ID, SubscriptionID: &sub.ID, Token: "relay-token"}).Error)
 	require.NoError(t, db.Create(&PlanNodeGroup{PlanID: plan.ID, NodeGroupID: nodeGroup.ID}).Error)
 
-	result, err := gen.GenerateByToken(ctx, "relay-token", "plain")
+	result, err := gen.GenerateByToken(ctx, "relay-token")
 	require.NoError(t, err)
-	assert.Contains(t, result.Content, "relay.example.com:24443")
-	assert.Contains(t, result.Content, "pbk=exit-pub")
-	assert.Contains(t, result.Content, "sid=exit-sid")
-	assert.NotContains(t, result.Content, "exit.node:443")
+	assert.Contains(t, result.Content, "server: relay.example.com")
+	assert.Contains(t, result.Content, "port: 24443")
+	assert.Contains(t, result.Content, "public-key: exit-pub")
+	assert.Contains(t, result.Content, "short-id: exit-sid")
+	assert.NotContains(t, result.Content, "server: exit.node")
 }
 
 // TestGenerator_GenerateByToken_InvalidToken 测试无效 token。
@@ -522,7 +365,7 @@ func TestGenerator_GenerateByToken_InvalidToken(t *testing.T) {
 	_, gen := setupSubTestDB(t)
 	ctx := context.Background()
 
-	_, err := gen.GenerateByToken(ctx, "nonexistent-token", "clash")
+	_, err := gen.GenerateByToken(ctx, "nonexistent-token")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "订阅")
 }
@@ -548,7 +391,7 @@ func TestGenerator_GenerateByToken_InvalidFormat(t *testing.T) {
 	token := &model.SubscriptionToken{UserID: user.ID, SubscriptionID: &sub.ID, Token: "fmt-token"}
 	db.Create(token)
 
-	_, err := gen.GenerateByToken(ctx, "fmt-token", "xml")
+	_, err := gen.GenerateByToken(ctx, "fmt-token")
 	assert.Error(t, err)
 }
 
@@ -573,7 +416,7 @@ func TestGenerator_GenerateByToken_ExpiredSub(t *testing.T) {
 	token := &model.SubscriptionToken{UserID: user.ID, SubscriptionID: &sub.ID, Token: "exp-token"}
 	db.Create(token)
 
-	_, err := gen.GenerateByToken(ctx, "exp-token", "clash")
+	_, err := gen.GenerateByToken(ctx, "exp-token")
 	assert.Error(t, err)
 }
 
@@ -598,7 +441,7 @@ func TestGenerator_GenerateByToken_OverTrafficSub(t *testing.T) {
 	token := &model.SubscriptionToken{UserID: user.ID, SubscriptionID: &sub.ID, Token: "over-token"}
 	db.Create(token)
 
-	_, err := gen.GenerateByToken(ctx, "over-token", "clash")
+	_, err := gen.GenerateByToken(ctx, "over-token")
 	assert.Error(t, err)
 }
 
@@ -639,7 +482,7 @@ func TestGenerator_GenerateByToken_UserTokenUsesCurrentSubscription(t *testing.T
 		UserID: user.ID, SubscriptionID: &oldSub.ID, Token: "old-token-still-present",
 	}).Error)
 
-	result, err := gen.GenerateByToken(ctx, "old-token-still-present", "plain")
+	result, err := gen.GenerateByToken(ctx, "old-token-still-present")
 	require.NoError(t, err)
 	assert.Equal(t, newSub.ID, result.Subscription.ID)
 	assert.Contains(t, result.Content, "old-token-node")

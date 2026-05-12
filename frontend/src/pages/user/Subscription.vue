@@ -136,13 +136,8 @@
         <p style="color: #606266; font-size: 14px; margin-bottom: 16px">点击下方链接在对应的代理客户端中导入订阅。</p>
 
         <div class="sub-links">
-          <el-radio-group v-model="selectedFormat" size="large" class="format-selector">
-            <el-radio-button v-for="format in subscriptionFormats" :key="format.value" :value="format.value">
-              {{ format.label }}
-            </el-radio-button>
-          </el-radio-group>
           <div class="sub-link-item">
-            <div class="link-label">{{ selectedFormatLabel }}</div>
+            <div class="link-label">Clash / mihomo</div>
             <div class="link-url">{{ selectedSubscriptionUrl }}</div>
             <el-button size="small" type="primary" @click="copyUrl(selectedSubscriptionUrl)">复制链接</el-button>
           </div>
@@ -152,8 +147,7 @@
           <template #default>
             <p style="margin: 4px 0">1. 复制链接后，在对应的代理客户端中导入订阅。</p>
             <p style="margin: 4px 0">2. <strong>Clash/mihomo</strong>：适用于 Clash Verge Rev、mihomo 等客户端。</p>
-            <p style="margin: 4px 0">3. <strong>Base64</strong>：适用于 Shadowrocket、Surge、Quantumult 等通用客户端。</p>
-            <p style="margin: 4px 0">4. <strong>纯文本 URI</strong>：VLESS 协议原始链接，兼容性最广。</p>
+            <p style="margin: 4px 0">3. 当前仅提供 Clash/mihomo YAML 订阅格式。</p>
           </template>
         </el-alert>
       </el-card>
@@ -162,7 +156,7 @@
 </template>
 
 <script setup>
-// 我的订阅页。展示订阅信息和三种格式的订阅链接。
+// 我的订阅页。展示订阅信息和 Clash/mihomo 订阅链接。
 import { ref, computed, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { userApi } from '@/api'
@@ -173,16 +167,8 @@ const usageData = ref(null)
 const loading = ref(false)
 const usageLoading = ref(false)
 const usageTab = ref('daily')
-const selectedFormat = ref('clash')
 
-const subscriptionFormats = [
-  { value: 'clash', label: 'Clash / mihomo' },
-  { value: 'base64', label: 'Base64' },
-  { value: 'plain', label: 'URI' },
-]
-
-const selectedSubscriptionUrl = computed(() => subscriptionUrl(selectedFormat.value))
-const selectedFormatLabel = computed(() => subscriptionFormats.find((item) => item.value === selectedFormat.value)?.label || 'Clash / mihomo')
+const selectedSubscriptionUrl = computed(() => subscriptionUrl())
 
 const trafficPools = computed(() => {
   if (!subscription.value) return []
@@ -257,9 +243,9 @@ function copyUrl(url) {
   })
 }
 
-function subscriptionUrl(format) {
+function subscriptionUrl() {
   const token = subscription.value?.tokens?.[0]
-  return token ? `${window.location.origin}/sub/${token}/${format}` : ''
+  return token ? `${window.location.origin}/sub/${token}` : ''
 }
 
 async function fetchSubscription() {
@@ -351,7 +337,7 @@ onMounted(() => {
   flex-direction: column;
   gap: 16px;
 }
-.format-selector {
+.subscription-link-format {
   align-self: flex-start;
 }
 .sub-link-item {

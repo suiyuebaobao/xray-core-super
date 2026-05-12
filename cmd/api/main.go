@@ -186,7 +186,7 @@ func main() {
 	r.GET("/api/site/sales-landing", siteConfigHandler.GetSalesLanding)
 
 	// 订阅下载（公开，通过 token 鉴权）
-	r.GET("/sub/:token/:format", subHandler.Download)
+	r.GET("/sub/:token", subHandler.Download)
 
 	// 兑换码（用户侧，需登录）
 	redeemGroup := r.Group("/api")
@@ -232,9 +232,11 @@ func main() {
 
 		// 节点管理
 		adminGroup.GET("/nodes", adminNodeHandler.List)
+		adminGroup.GET("/nodes/regions", adminNodeHandler.Regions)
 		adminGroup.POST("/nodes", adminNodeHandler.Create)
 		adminGroup.PUT("/nodes/:id", adminNodeHandler.Update)
 		adminGroup.DELETE("/nodes/:id", adminNodeHandler.Delete)
+		adminGroup.POST("/nodes/:id/resync-users", adminNodeHandler.ResyncUsers)
 		adminGroup.POST("/nodes/deploy/scan-ips", nodeDeployHandler.ScanIPs)
 		adminGroup.POST("/nodes/deploy", nodeDeployHandler.Deploy)
 		adminGroup.POST("/nodes/repair-center", nodeDeployHandler.RepairCenter)

@@ -49,7 +49,16 @@ func TestSiteConfigHandler_SubscriptionConfig_DefaultAndUpdate(t *testing.T) {
 		"custom_rules":["DOMAIN-SUFFIX,openai.com,PROXY","GEOIP,CN,DIRECT"],
 		"include_user_info":false,
 		"profile_update_interval":6,
-		"profile_web_page_url":"/subscription"
+		"profile_web_page_url":"/subscription",
+		"node_name_template":"{{flag}} {{region}} {{name}}",
+		"include_region_icon":true,
+		"enable_url_test_group":true,
+		"health_check_url":"https://cp.cloudflare.com/generate_204",
+		"url_test_interval":300,
+		"proxy_groups":[
+			{"name":"PROXY","type":"select","include_all":true,"include_auto":true,"include_direct":true},
+			{"name":"美国节点","type":"url-test","node_ids":[2,3],"include_all":false,"include_auto":false,"include_direct":false}
+		]
 	}`)
 	req = httptest.NewRequest(http.MethodPut, "/api/admin/site/subscription", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -62,4 +71,9 @@ func TestSiteConfigHandler_SubscriptionConfig_DefaultAndUpdate(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"include_user_info":false`)
 	assert.Contains(t, w.Body.String(), `"profile_update_interval":6`)
 	assert.Contains(t, w.Body.String(), `"profile_web_page_url":"/subscription"`)
+	assert.Contains(t, w.Body.String(), `"node_name_template":"{{flag}} {{region}} {{name}}"`)
+	assert.Contains(t, w.Body.String(), `"enable_url_test_group":true`)
+	assert.Contains(t, w.Body.String(), `"health_check_url":"https://cp.cloudflare.com/generate_204"`)
+	assert.Contains(t, w.Body.String(), `"proxy_groups"`)
+	assert.Contains(t, w.Body.String(), `"美国节点"`)
 }

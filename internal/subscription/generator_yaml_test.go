@@ -2,9 +2,13 @@
 package subscription_test
 
 import (
-	"strings"
+	"context"
+	"fmt"
 	"testing"
+	"time"
 
+	"suiyue/internal/model"
+	"suiyue/internal/repository"
 	"suiyue/internal/subscription"
 
 	"github.com/stretchr/testify/assert"
@@ -119,12 +123,6 @@ func TestGenerator_ClashYAML_XHTTPProxyStructure(t *testing.T) {
 	assert.Equal(t, "stream-up", xhttpOpts["mode"])
 	assert.Equal(t, "cdn.example.com", xhttpOpts["host"])
 
-	uriContent := gen.GeneratePlainURI(nodes)
-	assert.Contains(t, uriContent, "type=xhttp")
-	assert.Contains(t, uriContent, "path=%2Fraypilot-xhttp")
-	assert.Contains(t, uriContent, "mode=stream-up")
-	assert.Contains(t, uriContent, "host=cdn.example.com")
-	assert.NotContains(t, uriContent, "flow=")
 }
 
 func TestGenerator_ClashYAML_Socks5ProxyOmitsFlow(t *testing.T) {
@@ -155,9 +153,6 @@ func TestGenerator_ClashYAML_Socks5ProxyOmitsFlow(t *testing.T) {
 	assert.False(t, proxy["udp"].(bool))
 	assert.NotContains(t, proxy, "flow")
 
-	uriContent := gen.GeneratePlainURI(nodes)
-	assert.Contains(t, uriContent, "type=tcp")
-	assert.NotContains(t, uriContent, "flow=")
 }
 
 func TestGenerator_ClashYAML_UDPEnabledCanOverrideSocks5Default(t *testing.T) {
@@ -217,36 +212,78 @@ func TestGenerator_ClashYAML_MultipleNodes(t *testing.T) {
 	assert.Contains(t, proxyNames, "DIRECT")
 }
 
-// TestGenerator_PlainURI_Format 测试纯文本 URI 格式正确。
-func TestGenerator_PlainURI_Format(t *testing.T) {
-	_, gen := setupSubTestDB(t)
+func TestGenerator_GenerateByToken_UsesRegionAndManualProxyGroups(t *testing.T) {
+	db, gen := setupSubTestDB(t)
+	ctx := context.Background()
 
-	nodes := []subscription.NodeConfig{
-		{
-			Name:        "HK-01",
-			Server:      "hk.example.com",
-			Port:        443,
-			UUID:        "test-uuid",
-			ServerName:  "example.com",
-			PublicKey:   "pubkey",
-			ShortID:     "sid",
-			Fingerprint: "chrome",
-			Flow:        "xtls-rprx-vision",
-		},
+	user := &model.User{UUID: "group-user", Username: "groupuser", PasswordHash: "h", XrayUserKey: "group@x", Status: "active"}
+	require.NoError(t, db.Create(user).Error)
+	plan := &model.Plan{Name: "GroupPlan", Price: 10, DurationDays: 30, TrafficLimit: 10_000, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	nodeGroup := &model.NodeGroup{Name: "group-nodes"}
+	require.NoError(t, db.Create(nodeGroup).Error)
+	require.NoError(t, db.Exec("INSERT INTO plan_node_groups (plan_id, node_group_id) VALUES (?, ?)", plan.ID, nodeGroup.ID).Error)
+
+	hkNode := &model.Node{
+		Name: "香港 01", RegionCode: "HK", RegionName: "香港", RegionFlag: "🇭🇰",
+		Protocol: "vless", Host: "hk.example.com", Port: 443, ServerName: "www.microsoft.com", PublicKey: "hk-pk", ShortID: "hk-sid", Fingerprint: "chrome",
+		NodeGroupID: &nodeGroup.ID, AgentBaseURL: "http://hk:8080", AgentTokenHash: "hash", IsEnabled: true,
 	}
+	usNode := &model.Node{
+		Name: "美国 01", RegionCode: "US", RegionName: "美国", RegionFlag: "🇺🇸",
+		Protocol: "vless", Host: "us.example.com", Port: 443, ServerName: "www.microsoft.com", PublicKey: "us-pk", ShortID: "us-sid", Fingerprint: "chrome",
+		NodeGroupID: &nodeGroup.ID, AgentBaseURL: "http://us:8080", AgentTokenHash: "hash", IsEnabled: true,
+	}
+	require.NoError(t, db.Create(hkNode).Error)
+	require.NoError(t, db.Create(usNode).Error)
+	sub := &model.UserSubscription{
+		UserID: user.ID, PlanID: plan.ID, StartDate: time.Now(), ExpireDate: time.Now().AddDate(0, 0, 30),
+		TrafficLimit: 10_000, UsedTraffic: 0, Status: "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+	require.NoError(t, db.Create(&model.SubscriptionToken{UserID: user.ID, SubscriptionID: &sub.ID, Token: "manual-group-token"}).Error)
+	settingRepo := repository.NewSiteSettingRepository(db)
+	_, err := settingRepo.Upsert(ctx, model.SiteSettingSubscriptionConfig, fmt.Sprintf(`{
+		"profile_name":"LeiYun",
+		"custom_rules":["MATCH,PROXY"],
+		"include_region_icon":true,
+		"enable_url_test_group":true,
+		"node_name_template":"{{flag}} {{region}} {{name}}",
+		"health_check_url":"http://cp.cloudflare.com/generate_204",
+		"url_test_interval":300,
+		"proxy_groups":[
+			{"name":"PROXY","type":"select","include_all":true,"include_auto":true,"include_direct":true},
+			{"name":"空分组","type":"select","node_ids":[],"include_all":false,"include_auto":false,"include_direct":false},
+			{"name":"美国节点","type":"select","node_ids":[%d],"include_all":false,"include_auto":false,"include_direct":false}
+		]
+	}`, usNode.ID))
+	require.NoError(t, err)
 
-	uriContent := gen.GeneratePlainURI(nodes)
+	result, err := gen.GenerateByToken(ctx, "manual-group-token")
+	require.NoError(t, err)
+	var config map[string]interface{}
+	require.NoError(t, yaml.Unmarshal([]byte(result.Content), &config))
 
-	// 验证 URI 格式
-	assert.True(t, strings.HasPrefix(uriContent, "vless://"))
-	assert.Contains(t, uriContent, "@hk.example.com:443")
-	assert.Contains(t, uriContent, "encryption=none")
-	assert.Contains(t, uriContent, "flow=xtls-rprx-vision")
-	assert.Contains(t, uriContent, "security=reality")
-	assert.Contains(t, uriContent, "sni=example.com")
-	assert.Contains(t, uriContent, "pbk=pubkey")
-	assert.Contains(t, uriContent, "sid=sid")
-	assert.Contains(t, uriContent, "fp=chrome")
-	assert.Contains(t, uriContent, "type=tcp")
-	assert.Contains(t, uriContent, "#HK-01")
+	proxies := config["proxies"].([]interface{})
+	require.Len(t, proxies, 2)
+	assert.Equal(t, "🇭🇰 香港 香港 01", proxies[0].(map[string]interface{})["name"])
+	assert.Equal(t, "🇺🇸 美国 美国 01", proxies[1].(map[string]interface{})["name"])
+
+	groups := config["proxy-groups"].([]interface{})
+	require.Len(t, groups, 3)
+	proxyGroup := groups[0].(map[string]interface{})
+	assert.Equal(t, "PROXY", proxyGroup["name"])
+	assert.Contains(t, proxyGroup["proxies"].([]interface{}), "自动选择")
+	assert.Contains(t, proxyGroup["proxies"].([]interface{}), "🇭🇰 香港 香港 01")
+	assert.Contains(t, proxyGroup["proxies"].([]interface{}), "🇺🇸 美国 美国 01")
+
+	usGroup := groups[1].(map[string]interface{})
+	assert.Equal(t, "美国节点", usGroup["name"])
+	assert.Equal(t, []interface{}{"🇺🇸 美国 美国 01"}, usGroup["proxies"].([]interface{}))
+
+	autoGroup := groups[2].(map[string]interface{})
+	assert.Equal(t, "自动选择", autoGroup["name"])
+	assert.Equal(t, "url-test", autoGroup["type"])
+	assert.NotContains(t, fmt.Sprint(groups), "空分组")
+	assert.NotContains(t, fmt.Sprint(groups), "fallback")
 }

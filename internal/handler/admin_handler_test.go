@@ -107,6 +107,11 @@ func setupTestAdminApp(t *testing.T) (*gin.Engine, string) {
 	adminPlanHandler := handler.NewAdminPlanHandler(planRepo)
 	adminNodeGroupHandler := handler.NewAdminNodeGroupHandlerWithNodes(nodeGroupRepo, nodeRepo, nil)
 	adminNodeHandler := handler.NewAdminNodeHandlerWithSync(nodeRepo, subRepo, nil, repository.NewNodeHostRepository(db))
+	nodeAccessSvc := service.NewNodeAccessService(
+		repository.NewNodeAccessTaskRepository(db),
+		nodeRepo, planRepo, subRepo, userRepo, cfg,
+	)
+	adminNodeResyncHandler := handler.NewAdminNodeHandlerWithSync(nodeRepo, subRepo, nodeAccessSvc, repository.NewNodeHostRepository(db))
 	adminUserHandler := handler.NewAdminUserHandlerWithSubscription(userRepo, subRepo, tokenRepo, planRepo, nil, cfg.BCryptRounds, cfg.XrayUserKeyDomain)
 	usageHandler := handler.NewUsageHandler(repository.NewUsageLedgerRepository(db), userRepo, subRepo, planRepo)
 
@@ -140,6 +145,7 @@ func setupTestAdminApp(t *testing.T) (*gin.Engine, string) {
 		adminGroup.POST("/nodes", adminNodeHandler.Create)
 		adminGroup.PUT("/nodes/:id", adminNodeHandler.Update)
 		adminGroup.DELETE("/nodes/:id", adminNodeHandler.Delete)
+		adminGroup.POST("/nodes/:id/resync-users", adminNodeResyncHandler.ResyncUsers)
 
 		adminGroup.GET("/users", adminUserHandler.List)
 		adminGroup.POST("/users", adminUserHandler.Create)
@@ -151,10 +157,6 @@ func setupTestAdminApp(t *testing.T) (*gin.Engine, string) {
 		adminGroup.GET("/users/:id/usage", usageHandler.GetAdminUserUsage)
 
 		// 订阅 Token 管理
-		nodeAccessSvc := service.NewNodeAccessService(
-			repository.NewNodeAccessTaskRepository(db),
-			nodeRepo, planRepo, subRepo, nil, cfg,
-		)
 		subTokenHandler := handler.NewAdminSubscriptionTokenHandler(
 			tokenRepo, subRepo, userRepo, planRepo, nodeRepo, nodeAccessSvc,
 		)
@@ -240,6 +242,11 @@ func setupTestAdminAppWithDB(t *testing.T) (*gin.Engine, string, *gorm.DB) {
 	adminPlanHandler := handler.NewAdminPlanHandler(planRepo)
 	adminNodeGroupHandler := handler.NewAdminNodeGroupHandlerWithNodes(nodeGroupRepo, nodeRepo, nil)
 	adminNodeHandler := handler.NewAdminNodeHandlerWithSync(nodeRepo, subRepo, nil, repository.NewNodeHostRepository(db))
+	nodeAccessSvc := service.NewNodeAccessService(
+		repository.NewNodeAccessTaskRepository(db),
+		nodeRepo, planRepo, subRepo, userRepo, cfg,
+	)
+	adminNodeResyncHandler := handler.NewAdminNodeHandlerWithSync(nodeRepo, subRepo, nodeAccessSvc, repository.NewNodeHostRepository(db))
 	adminUserHandler := handler.NewAdminUserHandlerWithSubscription(userRepo, subRepo, tokenRepo, planRepo, nil, cfg.BCryptRounds, cfg.XrayUserKeyDomain)
 	usageHandler := handler.NewUsageHandler(repository.NewUsageLedgerRepository(db), userRepo, subRepo, planRepo)
 
@@ -273,6 +280,7 @@ func setupTestAdminAppWithDB(t *testing.T) (*gin.Engine, string, *gorm.DB) {
 		adminGroup.POST("/nodes", adminNodeHandler.Create)
 		adminGroup.PUT("/nodes/:id", adminNodeHandler.Update)
 		adminGroup.DELETE("/nodes/:id", adminNodeHandler.Delete)
+		adminGroup.POST("/nodes/:id/resync-users", adminNodeResyncHandler.ResyncUsers)
 
 		adminGroup.GET("/users", adminUserHandler.List)
 		adminGroup.POST("/users", adminUserHandler.Create)
@@ -284,10 +292,6 @@ func setupTestAdminAppWithDB(t *testing.T) (*gin.Engine, string, *gorm.DB) {
 		adminGroup.GET("/users/:id/usage", usageHandler.GetAdminUserUsage)
 
 		// 订阅 Token 管理
-		nodeAccessSvc := service.NewNodeAccessService(
-			repository.NewNodeAccessTaskRepository(db),
-			nodeRepo, planRepo, subRepo, nil, cfg,
-		)
 		subTokenHandler := handler.NewAdminSubscriptionTokenHandler(
 			tokenRepo, subRepo, userRepo, planRepo, nodeRepo, nodeAccessSvc,
 		)
@@ -771,6 +775,54 @@ func TestAdminHandler_CreateNode(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestAdminNodeHandler_ResyncUsers_QueuesVisibleSubscriptions(t *testing.T) {
+	r, adminToken, db := setupTestAdminAppWithDB(t)
+
+	nodeGroup := &model.NodeGroup{Name: "resync-http-group"}
+	require.NoError(t, db.Create(nodeGroup).Error)
+	node := &model.Node{
+		Name: "resync-http-node", Protocol: "vless", Transport: "tcp",
+		Host: "127.0.0.1", Port: 443, ServerName: "www.microsoft.com",
+		AgentBaseURL: "http://127.0.0.1:18080", AgentTokenHash: "hash", IsEnabled: true,
+	}
+	require.NoError(t, db.Create(node).Error)
+	require.NoError(t, db.Create(&model.NodeGroupNode{NodeGroupID: nodeGroup.ID, NodeID: node.ID}).Error)
+	plan := &model.Plan{Name: "resync-http-plan", Price: 10, DurationDays: 30, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	require.NoError(t, db.Create(&PlanNodeGroup{PlanID: plan.ID, NodeGroupID: nodeGroup.ID}).Error)
+	user := &model.User{
+		UUID: "resync-http-user", Username: "resynchttp", PasswordHash: "hashed",
+		XrayUserKey: "resynchttp@test.local", Status: "active",
+	}
+	require.NoError(t, db.Create(user).Error)
+	sub := &model.UserSubscription{
+		UserID: user.ID, PlanID: plan.ID, StartDate: time.Now().Add(-time.Hour),
+		ExpireDate: time.Now().AddDate(0, 0, 30), Status: "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/admin/nodes/%d/resync-users", node.ID), nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data := resp["data"].(map[string]interface{})
+	assert.Equal(t, float64(node.ID), data["node_id"])
+	assert.Equal(t, float64(1), data["targeted_count"])
+	assert.Equal(t, float64(1), data["queued_count"])
+	assert.Equal(t, float64(0), data["skipped_count"])
+
+	var task model.NodeAccessTask
+	require.NoError(t, db.Where("node_id = ? AND subscription_id = ? AND action = ?", node.ID, sub.ID, "UPSERT_USER").First(&task).Error)
+	require.NotNil(t, task.Payload)
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*task.Payload), &payload))
+	assert.Equal(t, "resync-http-user", payload["uuid"])
 }
 
 func TestAdminUserHandler_UpsertSubscription_SavesSpeedLimit(t *testing.T) {

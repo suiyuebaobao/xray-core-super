@@ -374,6 +374,9 @@ func (NodeHost) TableName() string {
 type Node struct {
 	ID                   uint64     `gorm:"primaryKey;column:id" json:"id"`
 	Name                 string     `gorm:"column:name;type:varchar(128)" json:"name"`
+	RegionCode           string     `gorm:"column:region_code;type:varchar(16)" json:"region_code"`
+	RegionName           string     `gorm:"column:region_name;type:varchar(64)" json:"region_name"`
+	RegionFlag           string     `gorm:"column:region_flag;type:varchar(16)" json:"region_flag"`
 	Protocol             string     `gorm:"column:protocol;type:varchar(32);default:vless" json:"protocol"`
 	Transport            string     `gorm:"column:transport;type:varchar(32);default:tcp" json:"transport"`
 	TrafficPool          string     `gorm:"column:traffic_pool;type:varchar(32);default:normal" json:"traffic_pool"`
@@ -464,6 +467,9 @@ func (NodeHealthCheck) TableName() string {
 // CreateNodeRequest 创建节点请求。
 type CreateNodeRequest struct {
 	Name             string   `json:"name" binding:"required"`
+	RegionCode       string   `json:"region_code"`
+	RegionName       string   `json:"region_name"`
+	RegionFlag       string   `json:"region_flag"`
 	Protocol         string   `json:"protocol" default:"vless"`
 	Transport        string   `json:"transport" binding:"omitempty,oneof=tcp xhttp"`
 	Transports       []string `json:"transports" binding:"omitempty,dive,oneof=tcp xhttp"`
@@ -495,6 +501,9 @@ type CreateNodeRequest struct {
 // UpdateNodeRequest 更新节点请求。
 type UpdateNodeRequest struct {
 	Name             string `json:"name" binding:"required"`
+	RegionCode       string `json:"region_code"`
+	RegionName       string `json:"region_name"`
+	RegionFlag       string `json:"region_flag"`
 	Protocol         string `json:"protocol"`
 	Transport        string `json:"transport" binding:"omitempty,oneof=tcp xhttp"`
 	TrafficPool      string `json:"traffic_pool" binding:"omitempty,oneof=normal residential"`
@@ -740,11 +749,26 @@ const (
 
 // SubscriptionConfig 订阅输出配置。
 type SubscriptionConfig struct {
-	ProfileName           string   `json:"profile_name"`
-	CustomRules           []string `json:"custom_rules"`
-	IncludeUserInfo       bool     `json:"include_user_info"`
-	ProfileUpdateInterval uint     `json:"profile_update_interval"`
-	ProfileWebPageURL     string   `json:"profile_web_page_url"`
+	ProfileName           string                         `json:"profile_name"`
+	CustomRules           []string                       `json:"custom_rules"`
+	IncludeUserInfo       bool                           `json:"include_user_info"`
+	ProfileUpdateInterval uint                           `json:"profile_update_interval"`
+	ProfileWebPageURL     string                         `json:"profile_web_page_url"`
+	NodeNameTemplate      string                         `json:"node_name_template"`
+	IncludeRegionIcon     bool                           `json:"include_region_icon"`
+	EnableURLTestGroup    bool                           `json:"enable_url_test_group"`
+	HealthCheckURL        string                         `json:"health_check_url"`
+	URLTestInterval       uint                           `json:"url_test_interval"`
+	ProxyGroups           []SubscriptionProxyGroupConfig `json:"proxy_groups"`
+}
+
+type SubscriptionProxyGroupConfig struct {
+	Name          string   `json:"name"`
+	Type          string   `json:"type"`
+	NodeIDs       []uint64 `json:"node_ids"`
+	IncludeAll    bool     `json:"include_all"`
+	IncludeAuto   bool     `json:"include_auto"`
+	IncludeDirect bool     `json:"include_direct"`
 }
 
 func DefaultSubscriptionConfig() SubscriptionConfig {
@@ -753,6 +777,14 @@ func DefaultSubscriptionConfig() SubscriptionConfig {
 		CustomRules:           []string{"GEOIP,CN,DIRECT", "MATCH,PROXY"},
 		IncludeUserInfo:       true,
 		ProfileUpdateInterval: 24,
+		NodeNameTemplate:      "{{flag}} {{name}}",
+		IncludeRegionIcon:     true,
+		EnableURLTestGroup:    true,
+		HealthCheckURL:        "http://cp.cloudflare.com/generate_204",
+		URLTestInterval:       86400,
+		ProxyGroups: []SubscriptionProxyGroupConfig{
+			{Name: "PROXY", Type: "select", IncludeAll: true, IncludeAuto: true, IncludeDirect: true},
+		},
 	}
 }
 
@@ -770,6 +802,24 @@ func NormalizeSubscriptionConfig(cfg SubscriptionConfig) SubscriptionConfig {
 		cfg.ProfileUpdateInterval = 168
 	}
 	cfg.ProfileWebPageURL = sanitizeSalesLandingHref(cfg.ProfileWebPageURL)
+	cfg.NodeNameTemplate = sanitizeSubscriptionNodeNameTemplate(cfg.NodeNameTemplate)
+	if cfg.NodeNameTemplate == "" {
+		cfg.NodeNameTemplate = def.NodeNameTemplate
+	}
+	cfg.HealthCheckURL = sanitizeSubscriptionHealthCheckURL(cfg.HealthCheckURL)
+	if cfg.HealthCheckURL == "" {
+		cfg.HealthCheckURL = def.HealthCheckURL
+	}
+	if cfg.URLTestInterval == 0 {
+		cfg.URLTestInterval = def.URLTestInterval
+	}
+	if cfg.URLTestInterval > 604800 {
+		cfg.URLTestInterval = 604800
+	}
+	cfg.ProxyGroups = normalizeSubscriptionProxyGroups(cfg.ProxyGroups)
+	if len(cfg.ProxyGroups) == 0 {
+		cfg.ProxyGroups = def.ProxyGroups
+	}
 	return cfg
 }
 
@@ -779,11 +829,17 @@ func ParseSubscriptionConfig(raw string) SubscriptionConfig {
 		return def
 	}
 	var decoded struct {
-		ProfileName           string   `json:"profile_name"`
-		CustomRules           []string `json:"custom_rules"`
-		IncludeUserInfo       *bool    `json:"include_user_info"`
-		ProfileUpdateInterval uint     `json:"profile_update_interval"`
-		ProfileWebPageURL     string   `json:"profile_web_page_url"`
+		ProfileName           string                         `json:"profile_name"`
+		CustomRules           []string                       `json:"custom_rules"`
+		IncludeUserInfo       *bool                          `json:"include_user_info"`
+		ProfileUpdateInterval uint                           `json:"profile_update_interval"`
+		ProfileWebPageURL     string                         `json:"profile_web_page_url"`
+		NodeNameTemplate      string                         `json:"node_name_template"`
+		IncludeRegionIcon     *bool                          `json:"include_region_icon"`
+		EnableURLTestGroup    *bool                          `json:"enable_url_test_group"`
+		HealthCheckURL        string                         `json:"health_check_url"`
+		URLTestInterval       uint                           `json:"url_test_interval"`
+		ProxyGroups           []SubscriptionProxyGroupConfig `json:"proxy_groups"`
 	}
 	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
 		return def
@@ -794,9 +850,21 @@ func ParseSubscriptionConfig(raw string) SubscriptionConfig {
 		IncludeUserInfo:       def.IncludeUserInfo,
 		ProfileUpdateInterval: decoded.ProfileUpdateInterval,
 		ProfileWebPageURL:     decoded.ProfileWebPageURL,
+		NodeNameTemplate:      decoded.NodeNameTemplate,
+		IncludeRegionIcon:     def.IncludeRegionIcon,
+		EnableURLTestGroup:    def.EnableURLTestGroup,
+		HealthCheckURL:        decoded.HealthCheckURL,
+		URLTestInterval:       decoded.URLTestInterval,
+		ProxyGroups:           decoded.ProxyGroups,
 	}
 	if decoded.IncludeUserInfo != nil {
 		cfg.IncludeUserInfo = *decoded.IncludeUserInfo
+	}
+	if decoded.IncludeRegionIcon != nil {
+		cfg.IncludeRegionIcon = *decoded.IncludeRegionIcon
+	}
+	if decoded.EnableURLTestGroup != nil {
+		cfg.EnableURLTestGroup = *decoded.EnableURLTestGroup
 	}
 	return NormalizeSubscriptionConfig(cfg)
 }
@@ -818,6 +886,13 @@ func sanitizeSubscriptionProfileName(name string) string {
 		}
 	}, name)
 	name = strings.TrimSpace(strings.Trim(name, ".-"))
+	lower := strings.ToLower(name)
+	for _, ext := range []string{".yaml", ".yml", ".txt"} {
+		if strings.HasSuffix(lower, ext) {
+			name = strings.TrimSpace(strings.Trim(name[:len(name)-len(ext)], ".-"))
+			break
+		}
+	}
 	runes := []rune(name)
 	if len(runes) > 64 {
 		name = string(runes[:64])
@@ -858,6 +933,112 @@ func normalizeSubscriptionRules(rules []string) []string {
 		normalized = append(normalized, "MATCH,PROXY")
 	}
 	return normalized
+}
+
+func normalizeSubscriptionProxyGroups(groups []SubscriptionProxyGroupConfig) []SubscriptionProxyGroupConfig {
+	normalized := make([]SubscriptionProxyGroupConfig, 0, len(groups))
+	seenNames := map[string]struct{}{}
+	for _, group := range groups {
+		name := sanitizeSubscriptionProxyGroupName(group.Name)
+		if name == "" {
+			continue
+		}
+		key := strings.ToUpper(name)
+		if _, ok := seenNames[key]; ok {
+			continue
+		}
+		seenNames[key] = struct{}{}
+		groupType := strings.ToLower(strings.TrimSpace(group.Type))
+		if groupType != "url-test" {
+			groupType = "select"
+		}
+		normalized = append(normalized, SubscriptionProxyGroupConfig{
+			Name:          name,
+			Type:          groupType,
+			NodeIDs:       normalizeSubscriptionProxyGroupNodeIDs(group.NodeIDs),
+			IncludeAll:    group.IncludeAll,
+			IncludeAuto:   group.IncludeAuto,
+			IncludeDirect: group.IncludeDirect,
+		})
+		if len(normalized) >= 30 {
+			break
+		}
+	}
+	return normalized
+}
+
+func normalizeSubscriptionProxyGroupNodeIDs(values []uint64) []uint64 {
+	seen := map[uint64]struct{}{}
+	normalized := make([]uint64, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+		if len(normalized) >= 500 {
+			break
+		}
+	}
+	return normalized
+}
+
+func sanitizeSubscriptionProxyGroupName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	name = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.Join(strings.Fields(name), " ")
+	runes := []rune(name)
+	if len(runes) > 64 {
+		name = string(runes[:64])
+	}
+	return name
+}
+
+func sanitizeSubscriptionNodeNameTemplate(template string) string {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return ""
+	}
+	template = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, template)
+	template = strings.Join(strings.Fields(template), " ")
+	runes := []rune(template)
+	if len(runes) > 96 {
+		template = string(runes[:96])
+	}
+	return template
+}
+
+func sanitizeSubscriptionHealthCheckURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return u.String()
+	default:
+		return ""
+	}
 }
 
 // SalesLandingConfig 销售首页配置。

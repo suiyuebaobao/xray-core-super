@@ -531,19 +531,15 @@ test.describe('admin operations flow', () => {
         await expect(tableRow(page, '.admin-redeem-codes', generated.code)).toContainText(planName)
       })
 
-      await test.step('subscription token list and format switch', async () => {
+      await test.step('subscription token list shows default subscription link only', async () => {
         const { pageNo } = await findTokenPageForUser(request, adminToken, created.userId)
         await gotoAdminPage(page, '/admin/subscription-tokens', '订阅 Token 管理')
         await goToTokenPage(page, pageNo)
         const tokenRow = tableRow(page, '.admin-subscription-tokens', username)
         await expect(tokenRow).toBeVisible()
-        await expect(tokenRow.locator('.link-preview')).toContainText('/clash')
-        await tokenRow.getByText('Base64').click()
-        await expect(tokenRow.locator('.link-preview')).toContainText('/base64')
-        await tokenRow.getByText('URI').click()
-        await expect(tokenRow.locator('.link-preview')).toContainText('/plain')
-        await tokenRow.getByText('Clash').click()
-        await expect(tokenRow.locator('.link-preview')).toContainText('/clash')
+        await expect(tokenRow.locator('.link-preview')).not.toContainText('/clash')
+        await expect(tokenRow).not.toContainText('Base64')
+        await expect(tokenRow).not.toContainText('URI')
       })
 
       assertNoRuntimeFailures()

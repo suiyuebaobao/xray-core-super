@@ -1,9 +1,7 @@
 // sub_handler.go — 订阅下载 HTTP 处理器。
 //
 // 职责：
-// - 处理 GET /sub/:token/clash
-// - 处理 GET /sub/:token/base64
-// - 处理 GET /sub/:token/plain
+// - 处理 GET /sub/:token
 // - 设置正确的 Content-Type 和 Content-Disposition 响应头
 // - 支持 ETag 缓存
 package handler
@@ -36,19 +34,11 @@ func NewSubHandler(gen *subscription.Generator, operationLogSvc ...*service.Oper
 	return &SubHandler{gen: gen, operationLogSvc: logSvc}
 }
 
-// Download 处理 GET /sub/:token/:format。
-// format 支持：clash、base64、plain。
+// Download 处理 GET /sub/:token。
 func (h *SubHandler) Download(c *gin.Context) {
 	token := c.Param("token")
-	format := c.Param("format")
 
-	// 校验格式
-	if format != "clash" && format != "base64" && format != "plain" {
-		response.HandleError(c, response.ErrBadRequest)
-		return
-	}
-
-	result, err := h.gen.GenerateByToken(c.Request.Context(), token, format)
+	result, err := h.gen.GenerateByToken(c.Request.Context(), token)
 	if err != nil {
 		response.HandleError(c, err)
 		return
@@ -63,7 +53,7 @@ func (h *SubHandler) Download(c *gin.Context) {
 		}
 		_ = h.operationLogSvc.Record(c.Request.Context(), logCtx, "user", "download_subscription", "success", "用户下载订阅", &targetType, nil, map[string]interface{}{
 			"user_id":      result.User.ID,
-			"format":       format,
+			"format":       "clash",
 			"token_suffix": tokenSuffix,
 		})
 	}
@@ -107,7 +97,7 @@ func asciiFilenameFallback(filename string) string {
 	}
 	fallback := strings.TrimSpace(b.String())
 	if fallback == "" {
-		return "RayPilot.yaml"
+		return "RayPilot"
 	}
 	return fallback
 }

@@ -169,14 +169,10 @@
         </div>
         <div v-if="activeTokens.length">
           <div v-for="token in activeTokens" :key="token.id" class="token-row">
-            <span>{{ tokenUrl(token.token, token.subscription_format || 'clash') }}</span>
+            <span>{{ tokenUrl(token.token) }}</span>
             <div class="token-actions">
-              <el-radio-group v-model="token.subscription_format" size="small">
-                <el-radio-button value="clash">Clash</el-radio-button>
-                <el-radio-button value="base64">Base64</el-radio-button>
-                <el-radio-button value="plain">URI</el-radio-button>
-              </el-radio-group>
-              <el-button size="small" type="primary" @click="copyTokenUrl(token.token, token.subscription_format || 'clash')">复制</el-button>
+              <el-tag size="small" type="success">Clash / mihomo</el-tag>
+              <el-button size="small" type="primary" @click="copyTokenUrl(token.token)">复制</el-button>
             </div>
           </div>
         </div>
@@ -386,10 +382,7 @@ const createRules = {
 const activeTokens = computed(() => subTokens.value.filter((t) => !t.is_revoked && (!t.expires_at || new Date(t.expires_at) > new Date())))
 
 function normalizeSubscriptionTokens(tokens) {
-  return (tokens || []).map((token) => ({
-    ...token,
-    subscription_format: token.subscription_format || 'clash',
-  }))
+  return tokens || []
 }
 
 function formatDate(dateStr) {
@@ -770,13 +763,13 @@ async function resetCurrentUserToken() {
   }
 }
 
-function tokenUrl(token, format) {
+function tokenUrl(token) {
   if (!token) return ''
-  return `${window.location.origin}/sub/${token}/${format}`
+  return `${window.location.origin}/sub/${token}`
 }
 
-function copyTokenUrl(token, format) {
-  const url = tokenUrl(token, format)
+function copyTokenUrl(token) {
+  const url = tokenUrl(token)
   navigator.clipboard.writeText(url).then(() => {
     ElMessage.success('已复制')
   }).catch(() => {

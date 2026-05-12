@@ -3,7 +3,7 @@
 // 测试范围：
 // - 有效 token 下载订阅
 // - 无效 token 返回错误
-// - 不同格式返回正确 Content-Type
+// - 默认订阅入口返回正确 Content-Type
 package handler_test
 
 import (
@@ -124,16 +124,16 @@ func setupSubHandlerTest(t *testing.T) (*gin.Engine, *gorm.DB) {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.GET("/sub/:token/:format", subHandler.Download)
+	r.GET("/sub/:token", subHandler.Download)
 
 	return r, db
 }
 
-// TestSubHandler_DownloadClash 测试 Clash 格式下载。
-func TestSubHandler_DownloadClash(t *testing.T) {
+// TestSubHandler_DownloadDefault 测试默认订阅下载。
+func TestSubHandler_DownloadDefault(t *testing.T) {
 	r, _ := setupSubHandlerTest(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123/clash", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -144,36 +144,44 @@ func TestSubHandler_DownloadClash(t *testing.T) {
 	assert.NotEmpty(t, w.Header().Get("profile-title"))
 }
 
-// TestSubHandler_DownloadBase64 测试 Base64 格式下载。
-func TestSubHandler_DownloadBase64(t *testing.T) {
+// TestSubHandler_DownloadClashDisabled 测试旧 Clash 后缀已下线。
+func TestSubHandler_DownloadClashDisabled(t *testing.T) {
+	r, _ := setupSubHandlerTest(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123/clash", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// TestSubHandler_DownloadBase64Disabled 测试旧 Base64 格式已下线。
+func TestSubHandler_DownloadBase64Disabled(t *testing.T) {
 	r, _ := setupSubHandlerTest(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123/base64", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Header().Get("Content-Type"), "text/plain")
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-// TestSubHandler_DownloadPlain 测试纯文本格式下载。
-func TestSubHandler_DownloadPlain(t *testing.T) {
+// TestSubHandler_DownloadPlainDisabled 测试旧纯文本 URI 格式已下线。
+func TestSubHandler_DownloadPlainDisabled(t *testing.T) {
 	r, _ := setupSubHandlerTest(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/sub/valid-token-123/plain", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Header().Get("Content-Type"), "text/plain")
-	assert.Contains(t, w.Body.String(), "vless://")
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 // TestSubHandler_InvalidToken 测试无效 Token。
 func TestSubHandler_InvalidToken(t *testing.T) {
 	r, _ := setupSubHandlerTest(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/sub/invalid-token/clash", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/invalid-token", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -188,5 +196,5 @@ func TestSubHandler_InvalidFormat(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }

@@ -19,7 +19,7 @@
         <div class="form-grid two">
           <el-form-item label="订阅名称">
             <el-input v-model="form.profile_name" maxlength="64" placeholder="例如：雷云 VPN" />
-            <p class="field-tip">Clash/mihomo 下载文件名会使用这个名称，例如 `雷云 VPN.yaml`。</p>
+            <p class="field-tip">Clash/mihomo 下载文件名会使用这个名称，不会额外追加 `.yaml`，例如 `雷云 VPN`。</p>
           </el-form-item>
           <el-form-item label="更新间隔（小时）">
             <el-input-number v-model="form.profile_update_interval" :min="0" :max="168" controls-position="right" />
@@ -34,12 +34,31 @@
           <el-switch v-model="form.include_user_info" active-text="输出用量头" inactive-text="不输出" />
           <p class="field-tip">开启后订阅响应会输出 `subscription-userinfo`，客户端可展示已用、总量和到期时间。</p>
         </el-form-item>
+        <el-form-item label="节点显示名称">
+          <el-input v-model="form.node_name_template" placeholder="{{flag}} {{name}}" />
+          <p class="field-tip">支持 `{{flag}}`、`{{name}}`、`{{region}}`、`{{code}}`、`{{index}}`、`{{transport}}`、`{{pool}}`。</p>
+        </el-form-item>
+        <el-form-item label="地区图标">
+          <el-switch v-model="form.include_region_icon" active-text="显示国旗" inactive-text="不显示" />
+          <p class="field-tip">国旗来自节点编辑页选择的国家/地区，不再根据节点名猜测。</p>
+        </el-form-item>
+        <div class="form-grid two">
+          <el-form-item label="自动测速">
+            <el-switch v-model="form.enable_url_test_group" active-text="输出自动测速组" inactive-text="不输出" />
+          </el-form-item>
+          <el-form-item label="测速间隔（秒）">
+            <el-input-number v-model="form.url_test_interval" :min="60" :max="604800" controls-position="right" />
+          </el-form-item>
+        </div>
+        <el-form-item label="测速地址">
+          <el-input v-model="form.health_check_url" placeholder="http://cp.cloudflare.com/generate_204" />
+        </el-form-item>
       </el-card>
 
       <el-card class="preview-card">
         <template #header>响应预览</template>
         <div class="terminal-preview">
-          <span>Content-Disposition: attachment; filename="{{ safeProfileName }}.yaml"</span>
+          <span>Content-Disposition: attachment; filename="{{ safeProfileName }}"</span>
           <span>profile-title: base64:{{ profileTitlePreview }}</span>
           <span v-if="form.include_user_info">subscription-userinfo: upload=0; download=&lt;已用字节&gt;; total=&lt;总量字节&gt;; expire=&lt;到期时间&gt;</span>
           <span v-if="form.profile_update_interval">profile-update-interval: {{ form.profile_update_interval }}</span>
@@ -48,6 +67,50 @@
         <div class="rule-chips">
           <el-tag v-for="rule in normalizedRules" :key="rule">{{ rule }}</el-tag>
         </div>
+      </el-card>
+
+      <el-card class="rules-card">
+        <template #header>
+          <div class="card-head">
+            <span>订阅分组</span>
+            <el-button size="small" type="primary" @click="addProxyGroup">新增分组</el-button>
+          </div>
+        </template>
+        <div class="group-editor">
+          <div v-for="(group, index) in form.proxy_groups" :key="group._key" class="group-card">
+            <div class="group-row">
+              <el-input v-model="group.name" placeholder="分组名称，例如：美国节点" />
+              <el-select v-model="group.type" style="width: 150px">
+                <el-option label="手动选择" value="select" />
+                <el-option label="自动测速" value="url-test" />
+              </el-select>
+              <el-button type="danger" plain @click="removeProxyGroup(index)" :disabled="form.proxy_groups.length <= 1">删除</el-button>
+            </div>
+            <div class="group-row group-row--toggles">
+              <el-switch v-model="group.include_all" active-text="包含全部节点" inactive-text="手动选择节点" />
+              <el-switch v-if="group.type === 'select'" v-model="group.include_auto" active-text="包含自动测速" inactive-text="不含自动测速" />
+              <el-switch v-model="group.include_direct" active-text="包含 DIRECT" inactive-text="不含 DIRECT" />
+            </div>
+            <el-select
+              v-if="!group.include_all"
+              v-model="group.node_ids"
+              multiple
+              filterable
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="选择加入该分组的节点"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="node in nodeOptions"
+                :key="node.id"
+                :label="nodeOptionLabel(node)"
+                :value="node.id"
+              />
+            </el-select>
+          </div>
+        </div>
+        <p class="field-tip">分组保存在订阅配置里，客户导入订阅后会看到这些分组；规则默认仍指向 `PROXY`。</p>
       </el-card>
 
       <el-card class="rules-card">
@@ -68,7 +131,7 @@
         <div class="rule-help">
           <span>空行和注释行会被忽略。</span>
           <span>如果没有兜底规则，后端会自动追加 `MATCH,PROXY`。</span>
-          <span>规则会写入 Clash YAML 的 `rules` 段，不影响 Base64 和 URI 格式。</span>
+          <span>规则会写入 Clash/mihomo YAML 的 `rules` 段。</span>
         </div>
       </el-card>
     </el-form>
@@ -84,13 +147,32 @@ const defaultRules = ['GEOIP,CN,DIRECT', 'MATCH,PROXY']
 const loading = ref(false)
 const saving = ref(false)
 const rulesText = ref(defaultRules.join('\n'))
+const nodeOptions = ref([])
 const form = reactive({
   profile_name: 'RayPilot',
   custom_rules: [...defaultRules],
   include_user_info: true,
   profile_update_interval: 24,
   profile_web_page_url: '',
+  node_name_template: '{{flag}} {{name}}',
+  include_region_icon: true,
+  enable_url_test_group: true,
+  health_check_url: 'http://cp.cloudflare.com/generate_204',
+  url_test_interval: 86400,
+  proxy_groups: [newProxyGroup()],
 })
+
+function newProxyGroup() {
+  return {
+    _key: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name: 'PROXY',
+    type: 'select',
+    node_ids: [],
+    include_all: true,
+    include_auto: true,
+    include_direct: true,
+  }
+}
 
 const normalizedRules = computed(() => {
   const rules = rulesText.value
@@ -102,7 +184,7 @@ const normalizedRules = computed(() => {
 
 const safeProfileName = computed(() => {
   const name = (form.profile_name || 'RayPilot').trim().replace(/[\\/:*?"<>|]/g, '-').replace(/^[.\-]+|[.\-]+$/g, '')
-  return name || 'RayPilot'
+  return name.replace(/\.(ya?ml|txt)$/i, '').replace(/^[.\-]+|[.\-]+$/g, '') || 'RayPilot'
 })
 
 const profileTitlePreview = computed(() => {
@@ -119,6 +201,12 @@ function assignConfig(data = {}) {
   form.include_user_info = data.include_user_info !== false
   form.profile_update_interval = Number(data.profile_update_interval || 0)
   form.profile_web_page_url = data.profile_web_page_url || ''
+  form.node_name_template = data.node_name_template || '{{flag}} {{name}}'
+  form.include_region_icon = data.include_region_icon !== false
+  form.enable_url_test_group = data.enable_url_test_group !== false
+  form.health_check_url = data.health_check_url || 'http://cp.cloudflare.com/generate_204'
+  form.url_test_interval = Number(data.url_test_interval || 86400)
+  form.proxy_groups = normalizeProxyGroupsForForm(data.proxy_groups)
   rulesText.value = form.custom_rules.join('\n')
 }
 
@@ -129,7 +217,56 @@ function payload() {
     include_user_info: form.include_user_info,
     profile_update_interval: Number(form.profile_update_interval || 0),
     profile_web_page_url: form.profile_web_page_url,
+    node_name_template: form.node_name_template,
+    include_region_icon: form.include_region_icon,
+    enable_url_test_group: form.enable_url_test_group,
+    health_check_url: form.health_check_url,
+    url_test_interval: Number(form.url_test_interval || 86400),
+    proxy_groups: form.proxy_groups.map((group) => ({
+      name: group.name,
+      type: group.type,
+      node_ids: group.include_all ? [] : group.node_ids,
+      include_all: group.include_all,
+      include_auto: group.include_auto,
+      include_direct: group.include_direct,
+    })),
   }
+}
+
+function normalizeProxyGroupsForForm(groups) {
+  const values = Array.isArray(groups) && groups.length ? groups : [newProxyGroup()]
+  return values.map((group, index) => {
+    const hasIncludeAll = Object.prototype.hasOwnProperty.call(group, 'include_all')
+    const nodeIds = Array.isArray(group.node_ids) ? group.node_ids : []
+    return {
+      _key: `${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`,
+      name: group.name || (index === 0 ? 'PROXY' : `分组 ${index + 1}`),
+      type: group.type === 'url-test' ? 'url-test' : 'select',
+      node_ids: nodeIds,
+      include_all: hasIncludeAll ? group.include_all !== false : nodeIds.length === 0,
+      include_auto: group.include_auto !== false,
+      include_direct: group.include_direct !== false,
+    }
+  })
+}
+
+function addProxyGroup() {
+  form.proxy_groups.push({
+    ...newProxyGroup(),
+    name: `分组 ${form.proxy_groups.length + 1}`,
+    include_all: false,
+    include_auto: false,
+  })
+}
+
+function removeProxyGroup(index) {
+  form.proxy_groups.splice(index, 1)
+}
+
+function nodeOptionLabel(node) {
+  const region = `${node.region_flag || ''} ${node.region_name || node.region_code || ''}`.trim()
+  const transport = node.transport === 'xhttp' ? 'XHTTP' : 'TCP'
+  return `${region ? `${region} · ` : ''}${node.name} · ${transport} · #${node.id}`
 }
 
 function restoreDefaultRules() {
@@ -139,8 +276,12 @@ function restoreDefaultRules() {
 async function fetchConfig() {
   loading.value = true
   try {
-    const res = await adminApi.site.subscription()
-    assignConfig(res.data)
+    const [configRes, nodesRes] = await Promise.all([
+      adminApi.site.subscription(),
+      adminApi.nodes.list(),
+    ])
+    nodeOptions.value = nodesRes.data?.nodes || []
+    assignConfig(configRes.data)
   } catch (err) {
     ElMessage.error(err.message || '获取订阅配置失败')
   } finally {
@@ -255,9 +396,34 @@ onMounted(fetchConfig)
   color: var(--rp-muted);
   font-size: 13px;
 }
+.group-editor {
+  display: grid;
+  gap: 14px;
+}
+.group-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(92, 241, 255, 0.16);
+  border-radius: 12px;
+  background: rgba(8, 16, 30, 0.52);
+}
+.group-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px auto;
+  gap: 10px;
+  align-items: center;
+}
+.group-row--toggles {
+  display: flex;
+  flex-wrap: wrap;
+}
 @media (max-width: 1100px) {
   .settings-grid,
   .form-grid.two {
+    grid-template-columns: 1fr;
+  }
+  .group-row {
     grid-template-columns: 1fr;
   }
   .page-header {

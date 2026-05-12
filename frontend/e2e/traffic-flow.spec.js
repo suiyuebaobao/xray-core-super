@@ -272,9 +272,9 @@ test('traffic accounting data flow is billed, deduped, reported, and visible in 
     const upsertTask = await claimUpsertUserTask(request, adminToken, created, agentToken, xrayUserKey, user.uuid)
     await reportAgentTask(request, created.nodeId, agentToken, upsertTask)
 
-    const plainSub = await request.get(`/sub/${upserted.tokens[0].token}/plain`)
-    expect(plainSub.ok(), 'plain subscription download').toBeTruthy()
-    expect(await plainSub.text()).toContain(`${prefix}-node`)
+    const defaultSub = await request.get(`/sub/${upserted.tokens[0].token}`)
+    expect(defaultSub.ok(), 'default subscription download').toBeTruthy()
+    expect(await defaultSub.text()).toContain(`${prefix}-node`)
 
     await agentApi(request, '/api/agent/traffic', {
       node_id: created.nodeId,
@@ -384,7 +384,7 @@ test('traffic accounting data flow is billed, deduped, reported, and visible in 
     await page.getByPlaceholder('用户名').fill(username)
     await page.getByPlaceholder('密码').fill(userPassword)
     await page.getByRole('button', { name: '登录' }).click()
-    await expect(page).toHaveURL(/\/$/)
+    await expect(page).toHaveURL(/\/dashboard$/)
     await page.goto('/subscription')
     await page.waitForLoadState('networkidle')
     await expect(page.getByText(`${prefix}-plan`).first()).toBeVisible()
@@ -446,8 +446,8 @@ test('traffic accounting data flow is billed, deduped, reported, and visible in 
     const exhaustedSub = await api(request, adminToken, 'get', `/api/admin/users/${created.userId}/subscription`)
     const exhaustedToken = exhaustedSub.tokens?.[0]?.token
     expect(exhaustedToken).toBeTruthy()
-    const exhaustedPlain = await request.get(`/sub/${exhaustedToken}/plain`)
-    expect(exhaustedPlain.ok(), 'exhausted subscription plain download should fail').toBe(false)
+    const exhaustedDownload = await request.get(`/sub/${exhaustedToken}`)
+    expect(exhaustedDownload.ok(), 'exhausted subscription download should fail').toBe(false)
   } finally {
     if (created.userId) {
       await safeApi(request, adminToken, 'delete', `/api/admin/users/${created.userId}`)

@@ -2474,6 +2474,19 @@ func (r *NodeAccessTaskRepository) Create(ctx context.Context, task *model.NodeA
 	return r.db.WithContext(ctx).Create(task).Error
 }
 
+// HasOpenTask 判断同一节点、订阅和动作是否已有未完成任务。
+func (r *NodeAccessTaskRepository) HasOpenTask(ctx context.Context, nodeID uint64, subID uint64, action string) (bool, error) {
+	var total int64
+	err := r.db.WithContext(ctx).
+		Model(&model.NodeAccessTask{}).
+		Where("node_id = ? AND subscription_id = ? AND action = ? AND status IN ?", nodeID, subID, action, []string{"PENDING", "PROCESSING"}).
+		Count(&total).Error
+	if err != nil {
+		return false, err
+	}
+	return total > 0, nil
+}
+
 // FindPendingByNodeID 查询节点的待执行任务。
 func (r *NodeAccessTaskRepository) FindPendingByNodeID(ctx context.Context, nodeID uint64, maxRetries int) ([]model.NodeAccessTask, error) {
 	var tasks []model.NodeAccessTask

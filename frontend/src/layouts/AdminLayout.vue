@@ -47,6 +47,10 @@
           <el-icon><Key /></el-icon>
           <span>订阅 Token</span>
         </el-menu-item>
+        <el-menu-item index="/admin/subscription-settings">
+          <el-icon><Document /></el-icon>
+          <span>订阅配置</span>
+        </el-menu-item>
         <el-menu-item index="/admin/sales-landing">
           <el-icon><Document /></el-icon>
           <span>销售首页</span>

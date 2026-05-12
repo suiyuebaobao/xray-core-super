@@ -733,7 +733,132 @@ func (SiteSetting) TableName() string {
 	return "site_settings"
 }
 
-const SiteSettingSalesLanding = "sales_landing"
+const (
+	SiteSettingSalesLanding       = "sales_landing"
+	SiteSettingSubscriptionConfig = "subscription_config"
+)
+
+// SubscriptionConfig 订阅输出配置。
+type SubscriptionConfig struct {
+	ProfileName           string   `json:"profile_name"`
+	CustomRules           []string `json:"custom_rules"`
+	IncludeUserInfo       bool     `json:"include_user_info"`
+	ProfileUpdateInterval uint     `json:"profile_update_interval"`
+	ProfileWebPageURL     string   `json:"profile_web_page_url"`
+}
+
+func DefaultSubscriptionConfig() SubscriptionConfig {
+	return SubscriptionConfig{
+		ProfileName:           "RayPilot",
+		CustomRules:           []string{"GEOIP,CN,DIRECT", "MATCH,PROXY"},
+		IncludeUserInfo:       true,
+		ProfileUpdateInterval: 24,
+	}
+}
+
+func NormalizeSubscriptionConfig(cfg SubscriptionConfig) SubscriptionConfig {
+	def := DefaultSubscriptionConfig()
+	cfg.ProfileName = sanitizeSubscriptionProfileName(cfg.ProfileName)
+	if cfg.ProfileName == "" {
+		cfg.ProfileName = def.ProfileName
+	}
+	cfg.CustomRules = normalizeSubscriptionRules(cfg.CustomRules)
+	if len(cfg.CustomRules) == 0 {
+		cfg.CustomRules = def.CustomRules
+	}
+	if cfg.ProfileUpdateInterval > 168 {
+		cfg.ProfileUpdateInterval = 168
+	}
+	cfg.ProfileWebPageURL = sanitizeSalesLandingHref(cfg.ProfileWebPageURL)
+	return cfg
+}
+
+func ParseSubscriptionConfig(raw string) SubscriptionConfig {
+	def := DefaultSubscriptionConfig()
+	if strings.TrimSpace(raw) == "" {
+		return def
+	}
+	var decoded struct {
+		ProfileName           string   `json:"profile_name"`
+		CustomRules           []string `json:"custom_rules"`
+		IncludeUserInfo       *bool    `json:"include_user_info"`
+		ProfileUpdateInterval uint     `json:"profile_update_interval"`
+		ProfileWebPageURL     string   `json:"profile_web_page_url"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return def
+	}
+	cfg := SubscriptionConfig{
+		ProfileName:           decoded.ProfileName,
+		CustomRules:           decoded.CustomRules,
+		IncludeUserInfo:       def.IncludeUserInfo,
+		ProfileUpdateInterval: decoded.ProfileUpdateInterval,
+		ProfileWebPageURL:     decoded.ProfileWebPageURL,
+	}
+	if decoded.IncludeUserInfo != nil {
+		cfg.IncludeUserInfo = *decoded.IncludeUserInfo
+	}
+	return NormalizeSubscriptionConfig(cfg)
+}
+
+func sanitizeSubscriptionProfileName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	name = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return '-'
+		default:
+			return r
+		}
+	}, name)
+	name = strings.TrimSpace(strings.Trim(name, ".-"))
+	runes := []rune(name)
+	if len(runes) > 64 {
+		name = string(runes[:64])
+	}
+	return name
+}
+
+func normalizeSubscriptionRules(rules []string) []string {
+	normalized := make([]string, 0, len(rules)+1)
+	seen := make(map[string]struct{})
+	hasCatchAll := false
+	for _, rule := range rules {
+		rule = strings.TrimSpace(rule)
+		if rule == "" || strings.HasPrefix(rule, "#") || strings.HasPrefix(rule, "//") {
+			continue
+		}
+		runes := []rune(rule)
+		if len(runes) > 300 {
+			rule = string(runes[:300])
+		}
+		upper := strings.ToUpper(rule)
+		if _, ok := seen[upper]; ok {
+			continue
+		}
+		seen[upper] = struct{}{}
+		if strings.HasPrefix(upper, "MATCH,") || strings.HasPrefix(upper, "FINAL,") {
+			hasCatchAll = true
+		}
+		normalized = append(normalized, rule)
+		if len(normalized) >= 300 {
+			break
+		}
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	if !hasCatchAll {
+		normalized = append(normalized, "MATCH,PROXY")
+	}
+	return normalized
+}
 
 // SalesLandingConfig 销售首页配置。
 type SalesLandingConfig struct {

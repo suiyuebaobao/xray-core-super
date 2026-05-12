@@ -838,6 +838,18 @@ const salesLandingConfig = {
   footer_text: 'RayPilot VPN 节点与流量服务',
 }
 
+const subscriptionConfig = {
+  profile_name: 'RayPilot',
+  custom_rules: [
+    'GEOIP,CN,DIRECT',
+    'DOMAIN-SUFFIX,openai.com,PROXY',
+    'MATCH,PROXY',
+  ],
+  include_user_info: true,
+  profile_update_interval: 24,
+  profile_web_page_url: '/subscription',
+}
+
 const json = (data) => ({
   success: true,
   message: 'ok',
@@ -989,6 +1001,9 @@ async function installDemoApi(page, persona = 'user') {
     }
     if (pathname === '/api/site/sales-landing' || pathname === '/api/admin/site/sales-landing') {
       return fulfillJson(route, json(salesLandingConfig))
+    }
+    if (pathname === '/api/admin/site/subscription') {
+      return fulfillJson(route, json(subscriptionConfig))
     }
     if (pathname === '/api/redeem') {
       return fulfillJson(route, json({ subscription: { ...subscription, expire_date: iso('2026-07-03T23:59:59Z') } }))
@@ -1203,6 +1218,7 @@ async function main() {
       ['admin-orders', '/admin/orders', '订单管理'],
       ['admin-redeem-codes', '/admin/redeem-codes', '兑换码管理'],
       ['admin-subscription-tokens', '/admin/subscription-tokens', '订阅 Token 管理'],
+      ['admin-subscription-settings', '/admin/subscription-settings', '订阅配置'],
       ['admin-sales-landing', '/admin/sales-landing', '销售首页'],
       ['admin-logs', '/admin/logs', '日志中心'],
     ]

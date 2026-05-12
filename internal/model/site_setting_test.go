@@ -96,3 +96,46 @@ func TestParseSalesLandingConfig_InvalidJSONReturnsDefault(t *testing.T) {
 		t.Fatalf("expected default config on invalid json, got %#v", cfg)
 	}
 }
+
+func TestNormalizeSubscriptionConfig_FiltersRulesAndKeepsCatchAll(t *testing.T) {
+	cfg := NormalizeSubscriptionConfig(SubscriptionConfig{
+		ProfileName:           "  My/VPN.yaml  ",
+		CustomRules:           []string{" # comment ", "DOMAIN-SUFFIX,openai.com,PROXY", "domain-suffix,openai.com,PROXY", "GEOIP,CN,DIRECT"},
+		IncludeUserInfo:       true,
+		ProfileUpdateInterval: 999,
+		ProfileWebPageURL:     "javascript:alert(1)",
+	})
+
+	if cfg.ProfileName != "My-VPN.yaml" {
+		t.Fatalf("expected sanitized profile name, got %q", cfg.ProfileName)
+	}
+	if len(cfg.CustomRules) != 3 {
+		t.Fatalf("expected deduplicated rules with fallback catch-all, got %#v", cfg.CustomRules)
+	}
+	if cfg.CustomRules[2] != "MATCH,PROXY" {
+		t.Fatalf("expected fallback MATCH rule, got %#v", cfg.CustomRules)
+	}
+	if cfg.ProfileUpdateInterval != 168 {
+		t.Fatalf("expected capped update interval, got %d", cfg.ProfileUpdateInterval)
+	}
+	if cfg.ProfileWebPageURL != "" {
+		t.Fatalf("expected unsafe web page url to be stripped, got %q", cfg.ProfileWebPageURL)
+	}
+}
+
+func TestParseSubscriptionConfig_MissingIncludeUserInfoDefaultsTrue(t *testing.T) {
+	cfg := ParseSubscriptionConfig(`{"profile_name":"LeiYun","custom_rules":["MATCH,PROXY"]}`)
+	if cfg.ProfileName != "LeiYun" {
+		t.Fatalf("expected parsed profile name, got %q", cfg.ProfileName)
+	}
+	if !cfg.IncludeUserInfo {
+		t.Fatalf("expected include_user_info to default true")
+	}
+}
+
+func TestParseSubscriptionConfig_CanDisableUserInfo(t *testing.T) {
+	cfg := ParseSubscriptionConfig(`{"profile_name":"LeiYun","custom_rules":["MATCH,PROXY"],"include_user_info":false}`)
+	if cfg.IncludeUserInfo {
+		t.Fatalf("expected include_user_info to be disabled")
+	}
+}

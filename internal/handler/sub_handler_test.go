@@ -21,6 +21,8 @@ func TestSubHandler_ClashContentType(t *testing.T) {
 	assert.Contains(t, w.Header().Get("Content-Type"), "text/yaml")
 	assert.Contains(t, w.Header().Get("Content-Disposition"), "RayPilot.yaml")
 	assert.Contains(t, w.Header().Get("Content-Disposition"), "filename*=UTF-8''RayPilot.yaml")
+	assert.Contains(t, w.Header().Get("subscription-userinfo"), "upload=0; download=0; total=1073741824; expire=")
+	assert.NotEmpty(t, w.Header().Get("profile-title"))
 }
 
 // TestSubHandler_Base64ContentType 测试 Base64 格式 Content-Type。

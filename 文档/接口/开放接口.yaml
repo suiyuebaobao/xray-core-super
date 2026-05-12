@@ -86,6 +86,21 @@ paths:
       responses:
         "200":
           description: 返回归一化后的销售首页配置，并记录管理员操作日志
+  /api/admin/site/subscription:
+    get:
+      summary: 管理员读取订阅输出配置
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 返回订阅名称、Clash/mihomo 规则、用量头开关、更新间隔和订阅页面地址
+    put:
+      summary: 管理员保存订阅输出配置
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 返回归一化后的订阅输出配置，并记录管理员操作日志
   /api/admin/dashboard/stats:
     get:
       summary: 管理后台仪表盘统计
@@ -353,7 +368,7 @@ paths:
   /sub/{token}/{format}:
     get:
       summary: 下载订阅配置
-      description: 一个用户级 Token 返回直连和中转多条线路；中转线路 server/port 来自中转节点，Reality 参数来自出口节点；用户连接中转不需要中转专用用户 Token。
+      description: 一个用户级 Token 返回直连和中转多条线路；中转线路 server/port 来自中转节点，Reality 参数来自出口节点；用户连接中转不需要中转专用用户 Token。响应头包含可配置文件名、profile-title、可选 subscription-userinfo 用量信息；Clash/mihomo rules 由后台订阅配置控制。
       parameters:
         - name: token
           in: path

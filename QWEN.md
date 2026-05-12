@@ -150,6 +150,10 @@ suiyue/
 
 ### 节点 Reality 与订阅联调规则
 
+- 订阅输出配置由后台 `/admin/subscription-settings` 管理，存储在 `site_settings.setting_key=subscription_config`；`SUBSCRIPTION_PROFILE_NAME` 仅作为未配置时的默认订阅名称回退。
+- Clash/mihomo 订阅文件名、`profile-title`、自定义 `rules`、`profile-update-interval`、`profile-web-page-url` 和 `subscription-userinfo` 用量头必须由订阅配置统一控制；规则为空时必须回退到 `GEOIP,CN,DIRECT` 与 `MATCH,PROXY`，缺少兜底规则时必须自动追加 `MATCH,PROXY`。
+- `subscription-userinfo` 必须使用用户当前有效订阅的普通池与家宽池合计用量和总量生成，只作为客户端展示信息，不参与扣费；扣费仍以 `usage_ledgers` 和订阅双流量池字段为准。
+- 修改订阅配置、订阅响应头、Clash 规则输出或订阅配置页面时，必须同步更新三份规则文件、`开发方案.md`、订阅接口文档、管理接口文档和页面清单，并运行 `go test ./...`、前端构建和 Playwright smoke。
 - 涉及 VLESS + Reality 节点、一键部署、订阅生成或节点同步时，必须确认 `nodes.server_name`、`nodes.public_key`、`nodes.short_id` 与节点 `/usr/local/etc/xray/config.json` 中 `realitySettings.serverNames[0]`、`publicKey` 或由 `privateKey` 派生的 PublicKey、`shortIds[0]` 一致。
 - 一键部署完成后必须自动读取节点 Xray Reality 参数并写回中心节点记录；如果同步失败，应让部署失败并清理本次创建的节点记录，不能留下可导入但不可用的节点。
 - 排查“订阅可导入但节点无信号”时，按顺序检查：订阅 URL 返回 200、节点 443/TCP 可达、Reality `sni/pbk/sid` 是否一致、用户 UUID 是否存在于节点 Xray `clients`、Xray 是否有可用 `outbounds`。

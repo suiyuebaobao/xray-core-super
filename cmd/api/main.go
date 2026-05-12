@@ -82,6 +82,7 @@ func main() {
 	// 创建订阅生成器
 	subGen := subscription.NewGenerator(subRepo, tokenRepo, planRepo, nodeRepo, userRepo, relayBackendRepo)
 	subGen.SetProfileName(cfg.SubscriptionProfileName)
+	subGen.SetSettingRepository(siteSettingRepo)
 
 	// 创建流量采集服务
 	trafficSvc := service.NewTrafficService(
@@ -287,6 +288,8 @@ func main() {
 		// 销售首页配置
 		adminGroup.GET("/site/sales-landing", siteConfigHandler.GetSalesLanding)
 		adminGroup.PUT("/site/sales-landing", siteConfigHandler.UpdateSalesLanding)
+		adminGroup.GET("/site/subscription", siteConfigHandler.GetSubscriptionConfig)
+		adminGroup.PUT("/site/subscription", siteConfigHandler.UpdateSubscriptionConfig)
 	}
 
 	// TODO: 注册更多路由（后续阶段）

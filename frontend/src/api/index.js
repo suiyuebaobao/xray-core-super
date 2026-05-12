@@ -108,6 +108,8 @@ export const adminApi = {
   site: {
     salesLanding: () => httpGet('/api/admin/site/sales-landing', freshParams()),
     updateSalesLanding: (payload) => httpPut('/api/admin/site/sales-landing', payload),
+    subscription: () => httpGet('/api/admin/site/subscription', freshParams()),
+    updateSubscription: (payload) => httpPut('/api/admin/site/subscription', payload),
   },
   logs: {
     runtime: (params) => httpGet('/api/admin/logs/runtime', compact(params || {})),

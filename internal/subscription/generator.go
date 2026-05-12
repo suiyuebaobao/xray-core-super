@@ -37,6 +37,7 @@ type Generator struct {
 	nodeRepo    *repository.NodeRepository
 	userRepo    *repository.UserRepository
 	relayRepo   *repository.RelayBackendRepository
+	settingRepo *repository.SiteSettingRepository
 	profileName string
 }
 
@@ -62,12 +63,18 @@ func (g *Generator) SetProfileName(name string) {
 	g.profileName = sanitizeProfileName(name)
 }
 
+// SetSettingRepository 设置站点配置仓库，用于动态读取后台订阅配置。
+func (g *Generator) SetSettingRepository(settingRepo *repository.SiteSettingRepository) {
+	g.settingRepo = settingRepo
+}
+
 // GenerateResult 订阅生成结果。
 type GenerateResult struct {
 	Content      string                  // 订阅内容
 	ContentType  string                  // MIME 类型
 	Filename     string                  // 下载文件名
 	ETag         string                  // 缓存标识
+	Headers      map[string]string       // 订阅客户端可识别的响应头
 	User         *model.User             // 用户信息
 	Subscription *model.UserSubscription // 订阅信息
 }
@@ -184,34 +191,37 @@ func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, for
 		return nil, response.ErrSubscriptionNoNodes
 	}
 
-	// 8. 按格式生成
+	// 8. 读取订阅输出配置。后台配置优先，环境变量作为默认回退。
+	outputConfig := g.loadOutputConfig(ctx)
+
+	// 9. 按格式生成
 	var content string
 	var contentType string
 	var filename string
 
 	switch format {
 	case "clash":
-		content = g.generateClashYAML(nodeConfigs)
+		content = g.generateClashYAMLWithRules(nodeConfigs, outputConfig.CustomRules)
 		contentType = "text/yaml; charset=utf-8"
-		filename = g.filenameForFormat(format)
+		filename = filenameForProfileAndFormat(outputConfig.ProfileName, format)
 	case "base64":
 		// Base64 格式：将 URI 列表做 Base64 编码，适用于通用客户端
 		plainContent := g.generatePlainURI(nodeConfigs)
 		content = base64.StdEncoding.EncodeToString([]byte(plainContent))
 		contentType = "text/plain; charset=utf-8"
-		filename = g.filenameForFormat(format)
+		filename = filenameForProfileAndFormat(outputConfig.ProfileName, format)
 	case "plain":
 		content = g.generatePlainURI(nodeConfigs)
 		contentType = "text/plain; charset=utf-8"
-		filename = g.filenameForFormat(format)
+		filename = filenameForProfileAndFormat(outputConfig.ProfileName, format)
 	default:
 		return nil, response.ErrBadRequest
 	}
 
-	// 9. 更新 token 最后使用时间
+	// 10. 更新 token 最后使用时间
 	_ = g.tokenRepo.UpdateLastUsed(ctx, token.ID)
 
-	// 10. 生成 ETag
+	// 11. 生成 ETag
 	etag := fmt.Sprintf("sub-%d-%d-%d", token.ID, len(nodeConfigs), sub.UpdatedAt.Unix())
 
 	return &GenerateResult{
@@ -219,18 +229,73 @@ func (g *Generator) GenerateByToken(ctx context.Context, tokenString string, for
 		ContentType:  contentType,
 		Filename:     filename,
 		ETag:         etag,
+		Headers:      g.resultHeaders(outputConfig, sub),
 		User:         user,
 		Subscription: sub,
 	}, nil
 }
 
 func (g *Generator) filenameForFormat(format string) string {
-	baseName := sanitizeProfileName(g.profileName)
+	return filenameForProfileAndFormat(g.profileName, format)
+}
+
+func filenameForProfileAndFormat(profileName string, format string) string {
+	baseName := sanitizeProfileName(profileName)
 	extension := ".txt"
 	if format == "clash" {
 		extension = ".yaml"
 	}
 	return trimProfileExtension(baseName) + extension
+}
+
+func (g *Generator) loadOutputConfig(ctx context.Context) model.SubscriptionConfig {
+	cfg := model.DefaultSubscriptionConfig()
+	cfg.ProfileName = sanitizeProfileName(g.profileName)
+	cfg = model.NormalizeSubscriptionConfig(cfg)
+	if g.settingRepo == nil {
+		return cfg
+	}
+	setting, err := g.settingRepo.FindByKey(ctx, model.SiteSettingSubscriptionConfig)
+	if err != nil || setting == nil {
+		return cfg
+	}
+	loaded := model.ParseSubscriptionConfig(setting.Value)
+	if strings.TrimSpace(loaded.ProfileName) == "" {
+		loaded.ProfileName = cfg.ProfileName
+	}
+	return model.NormalizeSubscriptionConfig(loaded)
+}
+
+func (g *Generator) resultHeaders(cfg model.SubscriptionConfig, sub *model.UserSubscription) map[string]string {
+	headers := map[string]string{
+		"profile-title": `base64:` + base64.StdEncoding.EncodeToString([]byte(cfg.ProfileName)),
+	}
+	if cfg.ProfileUpdateInterval > 0 {
+		headers["profile-update-interval"] = fmt.Sprintf("%d", cfg.ProfileUpdateInterval)
+	}
+	if cfg.ProfileWebPageURL != "" {
+		headers["profile-web-page-url"] = cfg.ProfileWebPageURL
+	}
+	if cfg.IncludeUserInfo && sub != nil {
+		headers["subscription-userinfo"] = subscriptionUserInfoHeader(sub)
+	}
+	return headers
+}
+
+func subscriptionUserInfoHeader(sub *model.UserSubscription) string {
+	used := sub.UsedTraffic + sub.ResidentialUsedTraffic
+	totalParts := make([]uint64, 0, 2)
+	if sub.TrafficLimit > 0 {
+		totalParts = append(totalParts, sub.TrafficLimit)
+	}
+	if sub.ResidentialTrafficLimit > 0 {
+		totalParts = append(totalParts, sub.ResidentialTrafficLimit)
+	}
+	var total uint64
+	for _, value := range totalParts {
+		total += value
+	}
+	return fmt.Sprintf("upload=0; download=%d; total=%d; expire=%d", used, total, sub.ExpireDate.Unix())
 }
 
 func sanitizeProfileName(name string) string {
@@ -377,12 +442,12 @@ func allowsRelayLine(lineMode string) bool {
 
 // GenerateClashYAML 公开方法：生成 Clash/mihomo 格式的 YAML 配置。
 func (g *Generator) GenerateClashYAML(nodes []NodeConfig) string {
-	return g.generateClashYAML(nodes)
+	return g.generateClashYAMLWithRules(nodes, model.DefaultSubscriptionConfig().CustomRules)
 }
 
 // GenerateBase64 公开方法：生成 Base64 编码的聚合订阅。
 func (g *Generator) GenerateBase64(nodes []NodeConfig) string {
-	clashContent := g.generateClashYAML(nodes)
+	clashContent := g.GenerateClashYAML(nodes)
 	return base64.StdEncoding.EncodeToString([]byte(clashContent))
 }
 
@@ -393,6 +458,16 @@ func (g *Generator) GeneratePlainURI(nodes []NodeConfig) string {
 
 // generateClashYAML 生成 Clash/mihomo 格式的 YAML 配置。
 func (g *Generator) generateClashYAML(nodes []NodeConfig) string {
+	return g.generateClashYAMLWithRules(nodes, model.DefaultSubscriptionConfig().CustomRules)
+}
+
+func (g *Generator) generateClashYAMLWithRules(nodes []NodeConfig, rules []string) string {
+	rules = model.NormalizeSubscriptionConfig(model.SubscriptionConfig{
+		ProfileName:     g.profileName,
+		CustomRules:     rules,
+		IncludeUserInfo: true,
+	}).CustomRules
+
 	proxies := make([]map[string]interface{}, 0, len(nodes))
 	for _, nc := range nodes {
 		transport := normalizeSubscriptionTransport(nc.Transport)
@@ -455,10 +530,7 @@ func (g *Generator) generateClashYAML(nodes []NodeConfig) string {
 				"proxies": proxyNames,
 			},
 		},
-		"rules": []string{
-			"GEOIP,CN,DIRECT",
-			"MATCH,PROXY",
-		},
+		"rules": rules,
 	}
 
 	data, err := yaml.Marshal(config)

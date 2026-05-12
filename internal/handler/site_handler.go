@@ -60,6 +60,58 @@ func (h *SiteConfigHandler) UpdateSalesLanding(c *gin.Context) {
 	response.Success(c, cfg)
 }
 
+func (h *SiteConfigHandler) GetSubscriptionConfig(c *gin.Context) {
+	cfg, err := h.loadSubscriptionConfig(c)
+	if err != nil {
+		response.HandleError(c, response.ErrInternalServer)
+		return
+	}
+	response.Success(c, cfg)
+}
+
+func (h *SiteConfigHandler) UpdateSubscriptionConfig(c *gin.Context) {
+	var req struct {
+		ProfileName           string   `json:"profile_name"`
+		CustomRules           []string `json:"custom_rules"`
+		IncludeUserInfo       *bool    `json:"include_user_info"`
+		ProfileUpdateInterval uint     `json:"profile_update_interval"`
+		ProfileWebPageURL     string   `json:"profile_web_page_url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.HandleError(c, response.ErrBadRequest)
+		return
+	}
+
+	includeUserInfo := true
+	if req.IncludeUserInfo != nil {
+		includeUserInfo = *req.IncludeUserInfo
+	}
+	cfg := model.NormalizeSubscriptionConfig(model.SubscriptionConfig{
+		ProfileName:           req.ProfileName,
+		CustomRules:           req.CustomRules,
+		IncludeUserInfo:       includeUserInfo,
+		ProfileUpdateInterval: req.ProfileUpdateInterval,
+		ProfileWebPageURL:     req.ProfileWebPageURL,
+	})
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		response.HandleError(c, response.ErrBadRequest)
+		return
+	}
+
+	if _, err := h.settingRepo.Upsert(c.Request.Context(), model.SiteSettingSubscriptionConfig, string(data)); err != nil {
+		response.HandleError(c, response.ErrInternalServer)
+		return
+	}
+
+	h.recordAdminOperation(c, "update_subscription_config", "success", "管理员更新订阅配置", map[string]interface{}{
+		"profile_name":      cfg.ProfileName,
+		"custom_rule_count": len(cfg.CustomRules),
+		"include_user_info": cfg.IncludeUserInfo,
+	})
+	response.Success(c, cfg)
+}
+
 func (h *SiteConfigHandler) loadSalesLanding(c *gin.Context) (model.SalesLandingConfig, error) {
 	if h == nil || h.settingRepo == nil {
 		return model.DefaultSalesLandingConfig(), nil
@@ -72,6 +124,20 @@ func (h *SiteConfigHandler) loadSalesLanding(c *gin.Context) (model.SalesLanding
 		return model.SalesLandingConfig{}, err
 	}
 	return model.ParseSalesLandingConfig(setting.Value), nil
+}
+
+func (h *SiteConfigHandler) loadSubscriptionConfig(c *gin.Context) (model.SubscriptionConfig, error) {
+	if h == nil || h.settingRepo == nil {
+		return model.DefaultSubscriptionConfig(), nil
+	}
+	setting, err := h.settingRepo.FindByKey(c.Request.Context(), model.SiteSettingSubscriptionConfig)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.DefaultSubscriptionConfig(), nil
+		}
+		return model.SubscriptionConfig{}, err
+	}
+	return model.ParseSubscriptionConfig(setting.Value), nil
 }
 
 func (h *SiteConfigHandler) recordAdminOperation(c *gin.Context, action, result, summary string, extra interface{}) {

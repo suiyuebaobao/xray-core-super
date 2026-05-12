@@ -41,6 +41,7 @@ func setupSubHandlerTest(t *testing.T) (*gin.Engine, *gorm.DB) {
 		&model.Plan{},
 		&model.NodeGroup{},
 		&model.Node{},
+		&model.SiteSetting{},
 		&PlanNodeGroup{},
 	))
 
@@ -139,6 +140,8 @@ func TestSubHandler_DownloadClash(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Header().Get("Content-Type"), "text/yaml")
 	assert.Contains(t, w.Body.String(), "proxies")
+	assert.Contains(t, w.Header().Get("subscription-userinfo"), "upload=0; download=0; total=1073741824; expire=")
+	assert.NotEmpty(t, w.Header().Get("profile-title"))
 }
 
 // TestSubHandler_DownloadBase64 测试 Base64 格式下载。

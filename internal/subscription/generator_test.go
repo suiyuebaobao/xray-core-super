@@ -11,6 +11,7 @@ package subscription_test
 import (
 	"context"
 	"encoding/base64"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,7 @@ func setupSubTestDB(t *testing.T) (*gorm.DB, *subscription.Generator) {
 		&model.Node{},
 		&model.Relay{},
 		&model.RelayBackend{},
+		&model.SiteSetting{},
 		&PlanNodeGroup{},
 	))
 
@@ -64,6 +66,7 @@ func setupSubTestDB(t *testing.T) (*gorm.DB, *subscription.Generator) {
 	relayBackendRepo := repository.NewRelayBackendRepository(db)
 
 	gen := subscription.NewGenerator(subRepo, tokenRepo, planRepo, nodeRepo, userRepo, relayBackendRepo)
+	gen.SetSettingRepository(repository.NewSiteSettingRepository(db))
 
 	return db, gen
 }
@@ -229,6 +232,54 @@ func TestGenerator_GenerateByToken_Clash(t *testing.T) {
 	customResult, err := gen.GenerateByToken(ctx, "sub-token-clash", "clash")
 	require.NoError(t, err)
 	assert.Equal(t, "RayPilot UAT.yaml", customResult.Filename)
+}
+
+func TestGenerator_GenerateByToken_UsesSubscriptionConfig(t *testing.T) {
+	db, gen := setupSubTestDB(t)
+	ctx := context.Background()
+
+	user := &model.User{UUID: "sub-config-user", Username: "subconfiguser", PasswordHash: "h", XrayUserKey: "sc@x", Status: "active"}
+	require.NoError(t, db.Create(user).Error)
+	plan := &model.Plan{Name: "SubConfigPlan", Price: 10, DurationDays: 30, TrafficLimit: 10_000, IsActive: true}
+	require.NoError(t, db.Create(plan).Error)
+	nodeGroup := &model.NodeGroup{Name: "sub-config-group"}
+	require.NoError(t, db.Create(nodeGroup).Error)
+	node := &model.Node{
+		Name: "sub-config-node", Protocol: "vless", Host: "sub-config.node",
+		Port: 443, ServerName: "sub-config.node", PublicKey: "pubkey", ShortID: "sid", Fingerprint: "chrome",
+		AgentBaseURL: "http://node:8080", AgentTokenHash: "hash", NodeGroupID: &nodeGroup.ID, IsEnabled: true,
+	}
+	require.NoError(t, db.Create(node).Error)
+	sub := &model.UserSubscription{
+		UserID: user.ID, PlanID: plan.ID, StartDate: time.Now(),
+		ExpireDate: time.Now().AddDate(0, 0, 30), TrafficLimit: 10_000, UsedTraffic: 1234,
+		ResidentialTrafficLimit: 20_000, ResidentialUsedTraffic: 5678, Status: "ACTIVE",
+	}
+	require.NoError(t, db.Create(sub).Error)
+	token := &model.SubscriptionToken{UserID: user.ID, SubscriptionID: &sub.ID, Token: "sub-config-token"}
+	require.NoError(t, db.Create(token).Error)
+	require.NoError(t, db.Exec("INSERT INTO plan_node_groups (plan_id, node_group_id) VALUES (?, ?)", plan.ID, nodeGroup.ID).Error)
+
+	settingRepo := repository.NewSiteSettingRepository(db)
+	_, err := settingRepo.Upsert(ctx, model.SiteSettingSubscriptionConfig, `{
+		"profile_name":"LeiYun VPN",
+		"custom_rules":["DOMAIN-SUFFIX,openai.com,PROXY","GEOIP,CN,DIRECT"],
+		"include_user_info":true,
+		"profile_update_interval":12,
+		"profile_web_page_url":"/subscription"
+	}`)
+	require.NoError(t, err)
+
+	result, err := gen.GenerateByToken(ctx, "sub-config-token", "clash")
+	require.NoError(t, err)
+	assert.Equal(t, "LeiYun VPN.yaml", result.Filename)
+	assert.Contains(t, result.Content, "DOMAIN-SUFFIX,openai.com,PROXY")
+	assert.Contains(t, result.Content, "GEOIP,CN,DIRECT")
+	assert.Contains(t, result.Content, "MATCH,PROXY")
+	assert.Equal(t, "upload=0; download=6912; total=30000; expire="+strconv.FormatInt(sub.ExpireDate.Unix(), 10), result.Headers["subscription-userinfo"])
+	assert.Equal(t, "12", result.Headers["profile-update-interval"])
+	assert.Equal(t, "/subscription", result.Headers["profile-web-page-url"])
+	assert.NotEmpty(t, result.Headers["profile-title"])
 }
 
 func TestGenerator_GenerateByToken_FiltersExhaustedTrafficPoolNodes(t *testing.T) {

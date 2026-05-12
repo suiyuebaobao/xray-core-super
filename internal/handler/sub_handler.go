@@ -81,6 +81,11 @@ func (h *SubHandler) Download(c *gin.Context) {
 	// 设置响应头
 	c.Header("Content-Type", result.ContentType)
 	c.Header("Content-Disposition", subscriptionContentDisposition(result.Filename))
+	for key, value := range result.Headers {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			c.Header(key, value)
+		}
+	}
 
 	// 直接写入响应体
 	c.String(http.StatusOK, result.Content)

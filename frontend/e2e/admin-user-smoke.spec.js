@@ -82,6 +82,7 @@ test('admin and user pages render against live API', async ({ page }) => {
     ['/admin/orders', '订单管理'],
     ['/admin/redeem-codes', '兑换码管理'],
     ['/admin/subscription-tokens', '订阅 Token 管理'],
+    ['/admin/subscription-settings', '订阅配置'],
     ['/admin/sales-landing', '销售首页'],
     ['/admin/logs', '日志中心'],
   ]
@@ -95,6 +96,13 @@ test('admin and user pages render against live API', async ({ page }) => {
   await page.goto('/admin/sales-landing')
   await page.waitForLoadState('networkidle')
   await expect(page.getByLabel('首页标题')).toHaveValue('高速 VPN 节点')
+  await expect(page.getByRole('button', { name: '保存配置' })).toBeVisible()
+
+  await page.goto('/admin/subscription-settings')
+  await page.waitForLoadState('networkidle')
+  await expect(page.getByLabel('订阅名称')).toBeVisible()
+  await expect(page.locator('.terminal-preview').getByText(/subscription-userinfo:/)).toBeVisible()
+  await expect(page.locator('.rule-chips').getByText('MATCH,PROXY', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '保存配置' })).toBeVisible()
 
   await page.goto('/admin/nodes')
